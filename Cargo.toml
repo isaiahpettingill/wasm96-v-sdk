@@ -4,3 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+libretro-backend = "0.2.1"
+wasmer = "6.1.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true
