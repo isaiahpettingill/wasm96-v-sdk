@@ -1,0 +1,30 @@
+[package]
+name = "wasm96-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SDK for building WASM apps that run under the wasm96 libretro core."
+
+[lib]
+# This is a normal Rust library that app crates depend on.
+# It does not need cdylib; the app itself will choose its crate-type.
+crate-type = ["rlib"]
+
+[features]
+# Keep the SDK lean by default. Apps can opt into allocator helpers and std convenience.
+default = ["std"]
+
+# Allow compiling without the Rust standard library for wasm32-unknown-unknown apps.
+std = []
+
+# Optional allocator (useful for wasm32-unknown-unknown apps that want a global allocator).
+wee_alloc = ["dep:wee_alloc"]
+
+
+
+[dependencies]
+# Optional global allocator for wasm32 apps; app authors can enable the feature and set it up.
+wee_alloc = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true

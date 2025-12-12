@@ -1,0 +1,224 @@
+package wasm96:core@0.1.0;
+
+/// The wasm96 host ABI exposed to the guest WASM module.
+///
+/// Design goals:
+/// - Guest can request a framebuffer of a specific size per game.
+/// - Host owns allocation/deallocation of video/audio buffers (guest receives pointers).
+/// - Guest drives its own update/draw loop by exporting `wasm96_frame` (host calls it every `on_run`).
+/// - Inputs cover libretro-critical devices (joypad, keyboard, mouse, lightgun).
+/// - SRAM is exposed for save/load persistence.
+///
+/// Notes:
+/// - Pointers are 32-bit offsets into the guest linear memory.
+/// - The host may return `ptr = 0` to indicate failure.
+/// - Pixel format is negotiated via `pixel-format` plus `pitch-bytes`.
+world wasm96 {
+  // =========================
+  // Guest exports (host calls)
+  // =========================
+
+  /// Called once after instantiation.
+  export wasm96-init: func();
+
+  /// Called once per libretro frame (`on_run`). Put your update + draw loop here.
+  export wasm96-frame: func();
+
+  /// Called when the game is being unloaded.
+  export wasm96-deinit: func();
+
+  /// Called when the core is reset.
+  export wasm96-reset: func();
+
+  // =========================
+  // Host imports (guest calls)
+  // =========================
+  import abi: interface {
+    /// ABI version. Breaking changes increment this.
+    abi-version: func() -> u32;
+  };
+
+  import video: interface {
+    /// Pixel format for the framebuffer.
+    ///
+    /// `xrgb8888` means 4 bytes per pixel, host interprets bytes as 32bpp packed pixels.
+    /// `rgb565` means 2 bytes per pixel, host interprets bytes as 16bpp packed pixels.
+    enum pixel-format {
+      xrgb8888,
+      rgb565,
+    }
+
+    /// Framebuffer description returned by the host.
+    record framebuffer {
+      /// Pointer to framebuffer bytes in guest memory (offset).
+      ptr: u32,
+      /// Width in pixels.
+      width: u32,
+      /// Height in pixels.
+      height: u32,
+      /// Bytes per row (pitch). Host chooses this; guest must respect it.
+      pitch-bytes: u32,
+      /// Format of pixels in the buffer.
+      format: pixel-format,
+      /// Total size in bytes of the framebuffer allocation.
+      byte-len: u32,
+    }
+
+    /// Request (or re-request) a framebuffer for the given size/format.
+    ///
+    /// Host allocates and returns a framebuffer in guest memory.
+    /// The host may reuse an existing allocation if it is compatible.
+    ///
+    /// On failure, returns a framebuffer with `ptr = 0`.
+    request-framebuffer: func(width: u32, height: u32, format: pixel-format) -> framebuffer;
+
+    /// Present the currently requested framebuffer to the host.
+    ///
+    /// The host copies `height * pitch-bytes` bytes from the framebuffer and displays it.
+    present: func();
+  };
+
+  import audio: interface {
+    /// Audio sample format is currently fixed: interleaved stereo i16.
+    ///
+    /// `capacity-frames` counts *stereo frames* (one frame = L+R i16 samples).
+    record ringbuffer {
+      /// Pointer to ringbuffer bytes in guest memory (offset).
+      ptr: u32,
+      /// Capacity in frames.
+      capacity-frames: u32,
+      /// Sample rate in Hz.
+      sample-rate: u32,
+      /// Channels (currently expected to be 2).
+      channels: u32,
+      /// Total size in bytes of the allocation.
+      byte-len: u32,
+    }
+
+    /// Request an audio ringbuffer for the given format.
+    ///
+    /// Host allocates and returns a ringbuffer in guest memory.
+    /// On failure, returns `ptr = 0`.
+    request-ringbuffer: func(sample-rate: u32, channels: u32, capacity-frames: u32) -> ringbuffer;
+
+    /// Returns the current producer write index (in frames, modulo capacity).
+    write-index: func() -> u32;
+
+    /// Returns the current consumer read index (in frames, modulo capacity).
+    read-index: func() -> u32;
+
+    /// Commit a new producer write index (in frames, modulo capacity).
+    ///
+    /// The guest writes samples into the ringbuffer and then advances the write index to
+    /// indicate how many frames are available.
+    commit: func(write-index: u32);
+
+    /// Drain up to `max-frames` from the ringbuffer to the host audio output.
+    ///
+    /// If `max-frames == 0`, host drains as much as it wants (typically what is available).
+    /// Returns the number of frames drained.
+    drain: func(max-frames: u32) -> u32;
+  };
+
+  import input: interface {
+    /// Joypad button ids (aligned with libretro joypad ids).
+    enum joypad-button {
+      b,
+      y,
+      select,
+      start,
+      up,
+      down,
+      left,
+      right,
+      a,
+      x,
+      l1,
+      r1,
+      l2,
+      r2,
+      l3,
+      r3,
+    }
+
+    /// Mouse buttons bitmask.
+    flags mouse-buttons {
+      left,
+      right,
+      middle,
+      button4,
+      button5,
+    }
+
+    /// Lightgun buttons bitmask (superset).
+    flags lightgun-buttons {
+      trigger,
+      reload,
+      start,
+      select,
+      aux-a,
+      aux-b,
+      aux-c,
+      offscreen,
+    }
+
+    /// Returns true if the joypad button is pressed for the given port.
+    joypad-button-pressed: func(port: u32, button: joypad-button) -> bool;
+
+    /// Returns true if the key is pressed.
+    ///
+    /// `key` is an implementation-defined key code. Recommended: libretro key ids or USB HID.
+    key-pressed: func(key: u32) -> bool;
+
+    /// Mouse position in pixels (or core-defined coordinate system).
+    mouse-x: func() -> i32;
+    mouse-y: func() -> i32;
+
+    /// Mouse buttons pressed.
+    mouse-pressed: func() -> mouse-buttons;
+
+    /// Lightgun coordinates for the given port.
+    lightgun-x: func(port: u32) -> i32;
+    lightgun-y: func(port: u32) -> i32;
+
+    /// Lightgun buttons pressed.
+    lightgun-pressed: func(port: u32) -> lightgun-buttons;
+  };
+
+  import sram: interface {
+    /// SRAM buffer handle returned by the host.
+    ///
+    /// Host owns allocation and lifetime. Guest may read/write based on returned pointer.
+    record buffer {
+      /// Pointer to SRAM bytes in guest memory (offset).
+      ptr: u32,
+      /// Size in bytes.
+      len: u32,
+    }
+
+    /// Get a pointer to the SRAM region for this content (if supported/enabled).
+    ///
+    /// On failure or if SRAM is unsupported, returns `ptr = 0`.
+    get: func() -> buffer;
+
+    /// Inform the host that SRAM has been modified and should be considered dirty.
+    ///
+    /// The host may flush this to libretro save memory at appropriate times.
+    mark-dirty: func();
+  };
+
+  import log: interface {
+    enum level {
+      trace,
+      debug,
+      info,
+      warn,
+      error,
+    }
+
+    /// Log a string to the host (for debugging).
+    ///
+    /// Host may route this to libretro logging if available.
+    write: func(level: level, message: string);
+  };
+}

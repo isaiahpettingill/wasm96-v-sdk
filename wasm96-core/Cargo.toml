@@ -1,0 +1,26 @@
+[package]
+name = "wasm96-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# This crate is the libretro core, so it must be built as a cdylib.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libretro-backend = { workspace = true }
+libretro-sys = "0.1.1"
+wasmer = { workspace = true }
+
+# Used to parse `.wat` text into `.wasm` bytes before passing to Wasmer.
+wat = "1.243.0"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true
