@@ -4,17 +4,17 @@
 //! - **Host**: `wasm96-core` (libretro core)
 //! - **Guest**: the loaded WASM module (“game/app”)
 //!
-//! ## High-level model (buffer-based)
-//! The host gives the guest pointers into *guest linear memory* for:
-//! - a **framebuffer**
-//! - an **audio ringbuffer**
+//! ## High-level model (write-only uploads)
+//! The host owns **all** video/audio buffers in **system memory**.
 //!
-//! The guest **requests** these buffers with a desired size/spec, then writes into them.
-//! The guest then **commits/presents** to let the host copy data out to libretro.
+//! The guest owns its own allocations in **WASM linear memory**, and submits data to the host
+//! via *write-only* upload calls:
+//! - Video: guest configures a framebuffer spec, uploads a full frame, then presents.
+//! - Audio: guest configures audio format, pushes interleaved i16 samples, and may request a drain.
 //!
-//! This is intentionally simple and deterministic:
-//! - The guest controls video size per game by requesting a framebuffer spec.
-//! - The guest controls its update/draw loop by exporting a per-frame function that the host calls.
+//! This keeps memory ownership clear:
+//! - Host does not allocate into guest memory.
+//! - Guest does not receive host pointers or handles.
 //!
 //! ## Imports (guest -> host)
 //! Imported from module `"env"`.
@@ -22,28 +22,24 @@
 //! ### ABI / lifecycle
 //! - `wasm96_abi_version() -> u32`
 //!
-//! ### Memory management helpers
-//! - `wasm96_alloc(size: u32, align: u32) -> u32`
-//! - `wasm96_free(ptr: u32, size: u32, align: u32)`
-//!
-//! ### Video (framebuffer)
-//! - `wasm96_video_request(width: u32, height: u32, pixel_format: u32) -> u32`
-//!     - Returns framebuffer pointer (guest offset) on success, or 0 on failure.
+//! ### Video (full-frame upload)
+//! - `wasm96_video_config(width: u32, height: u32, pixel_format: u32) -> u32`
+//!     - Returns 1 on success, 0 on failure.
+//! - `wasm96_video_upload(ptr: u32, byte_len: u32, pitch_bytes: u32) -> u32`
+//!     - Guest pointer (`ptr`) is an offset into guest linear memory.
+//!     - Host copies `byte_len` bytes into its system-memory framebuffer (full-frame only).
+//!     - Returns 1 on success, 0 on failure.
 //! - `wasm96_video_present()`
-//!     - Host copies the configured framebuffer (height * pitch bytes) and uploads it.
-//! - `wasm96_video_pitch() -> u32`
-//!     - Bytes per row of the configured framebuffer (0 if not configured).
 //!
-//! ### Audio (ringbuffer)
-//! - `wasm96_audio_request(sample_rate: u32, channels: u32, capacity_frames: u32) -> u32`
-//!     - Returns ringbuffer pointer (guest offset) on success, or 0.
-//! - `wasm96_audio_capacity_frames() -> u32`
-//! - `wasm96_audio_write_index() -> u32`
-//! - `wasm96_audio_read_index() -> u32`
-//! - `wasm96_audio_commit(write_index_frames: u32)`
-//!     - Guest sets its producer index (mod capacity). Host will drain available frames.
+//! ### Audio (push samples)
+//! - `wasm96_audio_config(sample_rate: u32, channels: u32) -> u32`
+//!     - Returns 1 on success, 0 on failure.
+//! - `wasm96_audio_push_i16(ptr: u32, frames: u32) -> u32`
+//!     - Guest pointer (`ptr`) is an offset into guest linear memory.
+//!     - Samples are interleaved i16, `frames` counts *frames* (one frame = `channels` samples).
+//!     - Returns number of frames accepted (0 on failure).
 //! - `wasm96_audio_drain(max_frames: u32) -> u32`
-//!     - Ask host to drain up to N frames from ringbuffer into libretro; returns drained frames.
+//!     - Drains up to `max_frames` frames from the host-side queue/ringbuffer into libretro.
 //!
 //! ### Input queries
 //! - `wasm96_joypad_button_pressed(port: u32, button: u32) -> u32`
@@ -55,25 +51,17 @@
 //! - `wasm96_lightgun_y(port: u32) -> i32`
 //! - `wasm96_lightgun_buttons(port: u32) -> u32`
 //!
-//! Notes:
-//! - “All controls” here means the core will expose a generalized set of input queries for
-//!   joypad/keyboard/mouse/lightgun. The actual mapping to libretro devices lives in `crate::input`.
-//!
 //! ## Exports (host -> guest) required
 //! The guest module **must** export at least:
 //! - `wasm96_frame()`
-//!   Called once per libretro `on_run` tick. The guest can implement its own update/draw loop here.
 //!
-//! Recommended exports (optional but highly useful):
-//! - `wasm96_init()`: called once after instantiation / after the host sets up imports
-//! - `wasm96_deinit()`: called on game unload
-//! - `wasm96_reset()`: called on reset
-//! - `wasm96_get_av_info(out_ptr: u32) -> u32`: write desired AV info struct (future)
+//! Optional exports:
+//! - `wasm96_init()`
+//! - `wasm96_deinit()`
+//! - `wasm96_reset()`
 //!
 //! ## ABI Stability
 //! We version this ABI with a single integer. Incompatible changes bump the number.
-//!
-//! The core should refuse to run guests that report a different ABI version.
 
 use wasmer::Function;
 
@@ -106,23 +94,14 @@ pub mod host_imports {
     // ABI
     pub const ABI_VERSION: &str = "wasm96_abi_version";
 
-    // Guest memory allocation (host calls guest malloc-like? no: guest calls host alloc)
-    // The core will implement these by delegating to guest exports if provided, or by using a
-    // simple bump allocator (future). For now we define the ABI.
-    pub const ALLOC: &str = "wasm96_alloc";
-    pub const FREE: &str = "wasm96_free";
-
-    // Video (buffer-based)
-    pub const VIDEO_REQUEST: &str = "wasm96_video_request";
+    // Video (write-only full-frame upload)
+    pub const VIDEO_CONFIG: &str = "wasm96_video_config";
+    pub const VIDEO_UPLOAD: &str = "wasm96_video_upload";
     pub const VIDEO_PRESENT: &str = "wasm96_video_present";
-    pub const VIDEO_PITCH: &str = "wasm96_video_pitch";
 
-    // Audio (ringbuffer-based)
-    pub const AUDIO_REQUEST: &str = "wasm96_audio_request";
-    pub const AUDIO_CAPACITY_FRAMES: &str = "wasm96_audio_capacity_frames";
-    pub const AUDIO_WRITE_INDEX: &str = "wasm96_audio_write_index";
-    pub const AUDIO_READ_INDEX: &str = "wasm96_audio_read_index";
-    pub const AUDIO_COMMIT: &str = "wasm96_audio_commit";
+    // Audio (write-only push)
+    pub const AUDIO_CONFIG: &str = "wasm96_audio_config";
+    pub const AUDIO_PUSH_I16: &str = "wasm96_audio_push_i16";
     pub const AUDIO_DRAIN: &str = "wasm96_audio_drain";
 
     // Input (joypad/keyboard/mouse/lightgun)
@@ -136,7 +115,7 @@ pub mod host_imports {
     pub const LIGHTGUN_BUTTONS: &str = "wasm96_lightgun_buttons";
 }
 
-/// Pixel format values used by `wasm96_video_request`.
+/// Pixel format values used by `wasm96_video_config` (and `wasm96_video_upload`).
 ///
 /// Keep these stable; they are part of the ABI. The core can extend this over time.
 #[repr(u32)]

@@ -1,0 +1,23 @@
+{
+  "name": "@wasm96/sdk-assemblyscript",
+  "version": "0.1.0",
+  "description": "Handwritten AssemblyScript SDK for wasm96 guest modules (no WIT/codegen).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "files": [
+    "assembly/",
+    "build/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "asbuild": "asc assembly/index.ts --target release --outFile build/wasm96-sdk.wasm --textFile build/wasm96-sdk.wat",
+    "test": "node -e \"console.log('no tests')\""
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.28.8"
+  }
+}

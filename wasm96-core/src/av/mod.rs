@@ -1,29 +1,27 @@
 //! Audio/Video helpers for wasm96-core.
 //!
-//! This module implements the "host presents/consumes guest-provided buffers" model.
+//! This module implements the **guest uploads -> host stores in system memory** model.
 //!
-//! - Video: guest requests a framebuffer (size/spec), writes pixels into it,
-//!   then calls `wasm96_video_present()`. The host copies bytes from guest memory
-//!   and calls `RuntimeHandle::upload_video_frame`.
+//! - Video: guest configures a framebuffer spec, then uploads an entire frame from guest
+//!   linear memory via `(ptr, byte_len, pitch_bytes)`. The host copies into a host-owned
+//!   system-memory buffer and presents from that buffer.
 //!
-//! - Audio: guest requests an audio ringbuffer, writes interleaved stereo i16
-//!   samples into it, then calls `wasm96_audio_commit(write_index)` (producer index
-//!   in frames). The host can drain available frames (optionally up to a max) and
-//!   calls `RuntimeHandle::upload_audio_frame` with the drained samples.
+//! - Audio: guest configures an audio spec, then pushes interleaved stereo i16 frames from
+//!   guest linear memory via `(ptr, frames)`. The host copies into a host-owned queue and
+//!   drains from that queue into libretro.
 //!
 //! Notes / limitations (current):
-//! - We always copy out of guest memory (no zero-copy).
-//! - Audio sample format is currently fixed to interleaved stereo i16.
-//! - Pixel format is tracked but not converted; `upload_video_frame` receives raw bytes.
+//! - Full-frame-only video uploads.
+//! - Audio sample format is fixed to interleaved stereo i16.
+//! - We still copy from guest memory into host/system memory (intentionally).
 
 use crate::abi::PixelFormat;
-use crate::state::{self, AudioSpec, GuestPtr, VideoSpec};
+use crate::state::{self, AudioSpec, VideoSpec};
 use wasmer::FunctionEnvMut;
 
 /// Errors from AV operations.
 #[derive(Debug)]
 pub enum AvError {
-    NotReady,
     MissingHandle,
     MissingMemory,
     VideoNotConfigured,
@@ -35,7 +33,6 @@ pub enum AvError {
 impl core::fmt::Display for AvError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            AvError::NotReady => write!(f, "AV not ready"),
             AvError::MissingHandle => write!(f, "missing libretro runtime handle"),
             AvError::MissingMemory => write!(f, "missing WASM guest memory"),
             AvError::VideoNotConfigured => write!(f, "video not configured"),
@@ -72,26 +69,21 @@ pub fn validate_video_request(
     if width == 0 || height == 0 {
         return Err(AvError::InvalidSpec);
     }
-    let pitch = compute_pitch(width, pixel_format).ok_or(AvError::InvalidSpec)?;
-    // Ensure size calculation doesn't overflow usize too badly.
+    let pitch_bytes = compute_pitch(width, pixel_format).ok_or(AvError::InvalidSpec)?;
     let _ = (height as usize)
-        .checked_mul(pitch as usize)
+        .checked_mul(pitch_bytes as usize)
         .ok_or(AvError::InvalidSpec)?;
 
     Ok(VideoSpec {
         width,
         height,
-        pitch,
+        pitch_bytes,
         pixel_format,
     })
 }
 
 /// Validate an audio request and create an `AudioSpec`.
-pub fn validate_audio_request(
-    sample_rate: u32,
-    channels: u32,
-    capacity_frames: u32,
-) -> Result<(AudioSpec, u32), AvError> {
+pub fn validate_audio_request(sample_rate: u32, channels: u32) -> Result<AudioSpec, AvError> {
     if sample_rate == 0 {
         return Err(AvError::InvalidSpec);
     }
@@ -99,242 +91,217 @@ pub fn validate_audio_request(
     if channels != 2 {
         return Err(AvError::InvalidSpec);
     }
-    if capacity_frames == 0 {
-        return Err(AvError::InvalidSpec);
+
+    Ok(AudioSpec {
+        sample_rate,
+        channels,
+    })
+}
+
+/// Configure host-side video spec and resize host framebuffer storage.
+pub fn video_config(width: u32, height: u32, pixel_format: u32) -> bool {
+    let spec = match validate_video_request(width, height, pixel_format) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    let mut s = state::global().lock().unwrap();
+    let need = spec.byte_len();
+
+    s.video.spec = Some(spec);
+    if s.video.host_fb.len() != need {
+        s.video.host_fb = vec![0u8; need];
     }
 
-    // Ensure the ring buffer size computation is sane:
-    // capacity_frames * channels * sizeof(i16)
-    let bytes_per_frame = (channels as usize)
-        .checked_mul(2)
-        .ok_or(AvError::InvalidSpec)?;
-    let _bytes_total = (capacity_frames as usize)
-        .checked_mul(bytes_per_frame)
-        .ok_or(AvError::InvalidSpec)?;
-
-    Ok((
-        AudioSpec {
-            sample_rate,
-            channels,
-        },
-        capacity_frames,
-    ))
+    true
 }
 
-/// Configure video in global state (spec + pointer).
-///
-/// This is typically called from the host import `wasm96_video_request`.
-pub fn configure_video(spec: VideoSpec, fb_ptr: GuestPtr) {
-    let mut s = state::global().lock().unwrap();
-    s.video.spec = Some(spec);
-    s.video.fb_ptr = Some(fb_ptr);
-}
-
-/// Configure audio in global state (spec + ring ptr + capacity).
-///
-/// This is typically called from the host import `wasm96_audio_request`.
-pub fn configure_audio(spec: AudioSpec, ring_ptr: GuestPtr, capacity_frames: u32) {
+/// Configure host-side audio format.
+pub fn audio_config(sample_rate: u32, channels: u32) -> Result<bool, AvError> {
+    let spec = validate_audio_request(sample_rate, channels)?;
     let mut s = state::global().lock().unwrap();
     s.audio.spec = Some(spec);
-    s.audio.ring_ptr = Some(ring_ptr);
-    s.audio.capacity_frames = capacity_frames;
-    s.audio.write_index_frames = 0;
-    s.audio.read_index_frames = 0;
+    Ok(true)
 }
 
-/// Return video pitch from global state (0 if not configured).
-pub fn video_pitch() -> u32 {
-    let s = state::global().lock().unwrap();
-    s.video.spec.map(|v| v.pitch).unwrap_or(0)
-}
-
-/// Return audio capacity frames from global state (0 if not configured).
-pub fn audio_capacity_frames() -> u32 {
-    let s = state::global().lock().unwrap();
-    if s.audio.is_configured() {
-        s.audio.capacity_frames
-    } else {
-        0
-    }
-}
-
-/// Return audio write index (producer index) from global state.
-pub fn audio_write_index_frames() -> u32 {
-    let s = state::global().lock().unwrap();
-    s.audio.write_index_frames
-}
-
-/// Return audio read index (consumer index) from global state.
-pub fn audio_read_index_frames() -> u32 {
-    let s = state::global().lock().unwrap();
-    s.audio.read_index_frames
-}
-
-/// Called when the guest commits its updated producer index.
+/// Upload a full video frame from guest memory into host/system-memory buffer.
 ///
-/// This updates the global state's `write_index_frames` (mod capacity).
-pub fn audio_commit(write_index_frames: u32) {
-    let mut s = state::global().lock().unwrap();
-    s.audio.set_write_index(write_index_frames);
-}
+/// `ptr` and `byte_len` refer to a region in guest linear memory.
+/// `pitch_bytes` must match the configured pitch (full-frame-only).
+pub fn video_upload(
+    env: &FunctionEnvMut<()>,
+    ptr: u32,
+    byte_len: u32,
+    pitch_bytes: u32,
+) -> Result<bool, AvError> {
+    let (memory_ptr, spec, dst_ptr, dst_len) = {
+        let mut s = state::global().lock().unwrap();
+        let memory_ptr = s.memory;
+        let spec = s.video.spec.ok_or(AvError::VideoNotConfigured)?;
 
-/// Present the currently configured framebuffer to libretro (copy out of guest memory).
-///
-/// This reads `height * pitch` bytes from guest memory at `fb_ptr` and uploads.
-pub fn video_present(env: &FunctionEnvMut<()>) -> Result<(), AvError> {
-    // Keep lock scope minimal: grab pointers/spec, then drop lock before reading memory.
-    let (handle_ptr, memory_ptr, spec, fb_ptr) = {
-        let s = state::global().lock().unwrap();
-        (s.handle, s.memory, s.video.spec, s.video.fb_ptr)
+        let need_len = spec.byte_len();
+        if pitch_bytes != spec.pitch_bytes {
+            return Err(AvError::InvalidSpec);
+        }
+        if byte_len as usize != need_len {
+            return Err(AvError::InvalidSpec);
+        }
+
+        if s.video.host_fb.len() != need_len {
+            s.video.host_fb = vec![0u8; need_len];
+        }
+
+        let dst_ptr = s.video.host_fb.as_mut_ptr();
+        let dst_len = s.video.host_fb.len();
+        (memory_ptr, spec, dst_ptr, dst_len)
     };
 
-    if handle_ptr.is_null() {
-        return Err(AvError::MissingHandle);
-    }
+    let _ = spec; // spec is validated above; keep it for clarity/future use.
+
     if memory_ptr.is_null() {
         return Err(AvError::MissingMemory);
     }
-
-    let spec = spec.ok_or(AvError::VideoNotConfigured)?;
-    let fb_ptr = fb_ptr.ok_or(AvError::VideoNotConfigured)?;
-
-    let byte_len = spec.byte_len();
-    let mut data = vec![0u8; byte_len];
-
-    // SAFETY: pointers were checked for null; reading is bounded by `byte_len`.
-    let h = unsafe { &mut *handle_ptr };
-    let mem = unsafe { &*memory_ptr };
-
-    let view = mem.view(env);
-    view.read(fb_ptr as u64, &mut data)
-        .map_err(|_| AvError::MemoryReadFailed)?;
-
-    h.upload_video_frame(&data);
-    Ok(())
-}
-
-/// Drain up to `max_frames` audio frames from the ringbuffer and upload to libretro.
-///
-/// Returns number of frames drained.
-///
-/// If `max_frames == 0`, drains all currently available frames.
-///
-/// Audio is interleaved stereo i16:
-/// - frames * 2 samples
-pub fn audio_drain(env: &FunctionEnvMut<()>, max_frames: u32) -> Result<u32, AvError> {
-    // Grab state snapshot first.
-    let (handle_ptr, memory_ptr, ring_ptr, spec, capacity, write_idx, read_idx) = {
-        let s = state::global().lock().unwrap();
-        (
-            s.handle,
-            s.memory,
-            s.audio.ring_ptr,
-            s.audio.spec,
-            s.audio.capacity_frames,
-            s.audio.write_index_frames,
-            s.audio.read_index_frames,
-        )
-    };
-
-    if handle_ptr.is_null() {
-        return Err(AvError::MissingHandle);
-    }
-    if memory_ptr.is_null() {
-        return Err(AvError::MissingMemory);
-    }
-
-    let ring_ptr = ring_ptr.ok_or(AvError::AudioNotConfigured)?;
-    let spec = spec.ok_or(AvError::AudioNotConfigured)?;
-
-    if capacity == 0 {
-        return Err(AvError::AudioNotConfigured);
-    }
-
-    // Compute available frames.
-    let available = {
-        let cap = capacity;
-        let w = write_idx % cap;
-        let r = read_idx % cap;
-        if w >= r { w - r } else { cap - (r - w) }
-    };
-    if available == 0 {
-        return Ok(0);
-    }
-
-    let to_drain = if max_frames == 0 {
-        available
-    } else {
-        available.min(max_frames)
-    };
-
-    // For simplicity, drain in up to two chunks (wrap-around).
-    let cap = capacity;
-    let r = read_idx % cap;
-
-    let first_chunk = to_drain.min(cap - r);
-    let second_chunk = to_drain - first_chunk;
-
-    // bytes_per_frame (stereo i16) == 4
-    let bpf = spec.bytes_per_frame();
-    if bpf != 4 {
-        // Should never happen given validation, but keep it defensive.
+    if ptr == 0 {
         return Err(AvError::InvalidSpec);
     }
 
-    // SAFETY: pointers were checked for null.
-    let h = unsafe { &mut *handle_ptr };
+    // SAFETY: memory pointer checked; destination pointer/len come from a valid Vec.
     let mem = unsafe { &*memory_ptr };
     let view = mem.view(env);
 
-    // Prepare a temporary Vec<i16> to avoid alignment/aliasing pitfalls.
-    // total samples = frames * channels
-    let total_samples = (to_drain as usize).saturating_mul(spec.channels as usize);
-    let mut out = vec![0i16; total_samples];
+    let mut tmp = vec![0u8; dst_len];
+    view.read(ptr as u64, &mut tmp)
+        .map_err(|_| AvError::MemoryReadFailed)?;
 
-    // Helper closure to read a chunk of frames into `out` as i16 LE.
-    let mut read_frames_into =
-        |dst_sample_offset: usize, frame_offset: u32, frames: u32| -> Result<(), AvError> {
-            if frames == 0 {
-                return Ok(());
-            }
-
-            let byte_offset = (frame_offset as u64).saturating_mul(bpf as u64);
-            let byte_len = (frames as usize).saturating_mul(bpf);
-
-            let mut tmp = vec![0u8; byte_len];
-            view.read((ring_ptr as u64).saturating_add(byte_offset), &mut tmp)
-                .map_err(|_| AvError::MemoryReadFailed)?;
-
-            // Convert LE bytes -> i16 samples.
-            // tmp len is multiple of 2.
-            let samples = tmp.len() / 2;
-            for i in 0..samples {
-                let lo = tmp[i * 2] as u16;
-                let hi = tmp[i * 2 + 1] as u16;
-                let v = (hi << 8) | lo;
-                out[dst_sample_offset + i] = v as i16;
-            }
-
-            Ok(())
-        };
-
-    // Read first chunk (from r to end).
-    read_frames_into(0, r, first_chunk)?;
-
-    // Read second chunk (from 0).
-    if second_chunk != 0 {
-        let dst_sample_offset = (first_chunk as usize).saturating_mul(spec.channels as usize);
-        read_frames_into(dst_sample_offset, 0, second_chunk)?;
+    // SAFETY: dst_ptr is valid for dst_len bytes, and tmp is exactly dst_len bytes.
+    unsafe {
+        core::ptr::copy_nonoverlapping(tmp.as_ptr(), dst_ptr, dst_len);
     }
 
-    // Upload drained samples to libretro.
-    h.upload_audio_frame(out.as_slice());
+    Ok(true)
+}
 
-    // Advance read index in global state.
+/// Present the last uploaded host/system-memory framebuffer to libretro (best-effort).
+pub fn video_present_host() {
+    let (handle_ptr, data) = {
+        let s = state::global().lock().unwrap();
+        (s.handle, s.video.host_fb.clone())
+    };
+
+    if handle_ptr.is_null() {
+        return;
+    }
+
+    // SAFETY: handle pointer checked.
+    let h = unsafe { &mut *handle_ptr };
+    h.upload_video_frame(&data);
+}
+
+/// Push interleaved stereo i16 audio frames from guest memory into the host queue.
+///
+/// `ptr` points to `frames * channels` i16 samples (little-endian in guest memory).
+pub fn audio_push_i16(env: &FunctionEnvMut<()>, ptr: u32, frames: u32) -> Result<u32, AvError> {
+    let (handle_ptr, memory_ptr, spec) = {
+        let s = state::global().lock().unwrap();
+        (s.handle, s.memory, s.audio.spec)
+    };
+
+    if handle_ptr.is_null() {
+        return Err(AvError::MissingHandle);
+    }
+    if memory_ptr.is_null() {
+        return Err(AvError::MissingMemory);
+    }
+    let spec = spec.ok_or(AvError::AudioNotConfigured)?;
+    if spec.channels != 2 {
+        return Err(AvError::InvalidSpec);
+    }
+    if ptr == 0 {
+        return Err(AvError::InvalidSpec);
+    }
+
+    let samples_per_frame = spec.samples_per_frame();
+    if samples_per_frame != 2 {
+        return Err(AvError::InvalidSpec);
+    }
+
+    let samples_total = (frames as usize)
+        .checked_mul(samples_per_frame)
+        .ok_or(AvError::InvalidSpec)?;
+    let byte_len = samples_total.checked_mul(2).ok_or(AvError::InvalidSpec)?;
+
+    // SAFETY: pointers checked.
+    let mem = unsafe { &*memory_ptr };
+    let view = mem.view(env);
+
+    let mut tmp = vec![0u8; byte_len];
+    view.read(ptr as u64, &mut tmp)
+        .map_err(|_| AvError::MemoryReadFailed)?;
+
+    // Convert LE bytes -> i16 samples.
+    let samples = tmp.len() / 2;
+    let mut out = vec![0i16; samples];
+    for i in 0..samples {
+        let lo = tmp[i * 2] as u16;
+        let hi = tmp[i * 2 + 1] as u16;
+        out[i] = ((hi << 8) | lo) as i16;
+    }
+
+    // Append to host queue (system memory).
     {
         let mut s = state::global().lock().unwrap();
-        s.audio.consume_frames(to_drain);
+        // Guest could push without calling config; treat as not configured.
+        if s.audio.spec.is_none() {
+            return Err(AvError::AudioNotConfigured);
+        }
+        s.audio.host_queue.extend_from_slice(&out);
     }
 
-    Ok(to_drain)
+    Ok(frames)
+}
+
+/// Drain up to `max_frames` from the host queue into libretro audio output.
+/// Returns frames drained.
+/// If `max_frames == 0`, drains everything currently queued.
+pub fn audio_drain_host(max_frames: u32) -> u32 {
+    let (handle_ptr, samples_per_frame) = {
+        let s = state::global().lock().unwrap();
+        let Some(spec) = s.audio.spec else {
+            return 0;
+        };
+        (s.handle, spec.samples_per_frame())
+    };
+
+    if handle_ptr.is_null() {
+        return 0;
+    }
+    if samples_per_frame == 0 {
+        return 0;
+    }
+
+    // Drain from the host queue while holding the lock, but DO NOT call libretro while locked.
+    let (frames_to_drain, drained) = {
+        let mut s = state::global().lock().unwrap();
+
+        let available_frames = (s.audio.host_queue.len() / samples_per_frame) as u32;
+        if available_frames == 0 {
+            return 0;
+        }
+
+        let n = if max_frames == 0 {
+            available_frames
+        } else {
+            available_frames.min(max_frames)
+        };
+
+        let drain_samples = (n as usize).saturating_mul(samples_per_frame);
+        let drained: Vec<i16> = s.audio.host_queue.drain(0..drain_samples).collect();
+        (n, drained)
+    };
+
+    // SAFETY: handle pointer checked.
+    let h = unsafe { &mut *handle_ptr };
+    h.upload_audio_frame(drained.as_slice());
+
+    frames_to_drain
 }

@@ -1,0 +1,24 @@
+{
+  "targets": {
+    "debug": {
+      "outFile": "build/wasm96-sdk.debug.wasm",
+      "textFile": "build/wasm96-sdk.debug.wat",
+      "sourceMap": true,
+      "debug": true,
+      "optimizeLevel": 0,
+      "shrinkLevel": 0
+    },
+    "release": {
+      "outFile": "build/wasm96-sdk.wasm",
+      "textFile": "build/wasm96-sdk.wat",
+      "sourceMap": false,
+      "debug": false,
+      "optimizeLevel": 3,
+      "shrinkLevel": 2
+    }
+  },
+  "options": {
+    "bindings": "raw",
+    "exportRuntime": false
+  }
+}

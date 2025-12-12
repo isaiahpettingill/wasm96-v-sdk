@@ -1,0 +1,13 @@
+{
+  "name": "wasm96-sdk-d",
+  "description": "Handwritten D guest SDK for the wasm96 libretro core (wasm32).",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025",
+  "authors": ["wasm96 contributors"],
+  "targetType": "library",
+  "sourcePaths": ["source"],
+  "importPaths": ["source"],
+  "dflags": ["-preview=dip1000"],
+  "versions": [],
+  "dependencies": {}
+}

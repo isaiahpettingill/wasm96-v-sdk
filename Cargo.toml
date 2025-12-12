@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "wasm96-core",
   "wasm96-sdk",
+  "example/rust-guest",
 ]
 
 # Optional: allows `cargo build` at the workspace root to default to building the core.

@@ -4,8 +4,12 @@
 //!
 //! This crate is used by **guest** WASM apps that run inside the `wasm96` libretro core.
 //!
-//! The host ABI is a small set of `extern "C"` imports from module `"env"` plus a few
-//! required guest exports (`wasm96_frame`, optional `wasm96_init/deinit/reset`).
+//! ABI model (upload-based):
+//! - Guest owns allocations in WASM linear memory.
+//! - Host owns its video/audio buffers in system memory.
+//! - Guest performs **write-only** uploads:
+//!   - Video: configure -> upload full frame -> present
+//!   - Audio: configure -> push i16 frames -> drain (optional)
 //!
 //! This file intentionally contains **no WIT** and **no codegen**.
 
@@ -100,31 +104,19 @@ pub mod sys {
         #[link_name = "wasm96_abi_version"]
         pub fn wasm96_abi_version() -> u32;
 
-        // Allocation helpers (currently stubbed on host; may return 0).
-        #[link_name = "wasm96_alloc"]
-        pub fn wasm96_alloc(size: u32, align: u32) -> u32;
-        #[link_name = "wasm96_free"]
-        pub fn wasm96_free(ptr: u32, size: u32, align: u32);
-
-        // Video
-        #[link_name = "wasm96_video_request"]
-        pub fn wasm96_video_request(width: u32, height: u32, pixel_format: u32) -> u32;
+        // Video (upload-based)
+        #[link_name = "wasm96_video_config"]
+        pub fn wasm96_video_config(width: u32, height: u32, pixel_format: u32) -> u32;
+        #[link_name = "wasm96_video_upload"]
+        pub fn wasm96_video_upload(ptr: u32, byte_len: u32, pitch_bytes: u32) -> u32;
         #[link_name = "wasm96_video_present"]
         pub fn wasm96_video_present();
-        #[link_name = "wasm96_video_pitch"]
-        pub fn wasm96_video_pitch() -> u32;
 
-        // Audio
-        #[link_name = "wasm96_audio_request"]
-        pub fn wasm96_audio_request(sample_rate: u32, channels: u32, capacity_frames: u32) -> u32;
-        #[link_name = "wasm96_audio_capacity_frames"]
-        pub fn wasm96_audio_capacity_frames() -> u32;
-        #[link_name = "wasm96_audio_write_index"]
-        pub fn wasm96_audio_write_index() -> u32;
-        #[link_name = "wasm96_audio_read_index"]
-        pub fn wasm96_audio_read_index() -> u32;
-        #[link_name = "wasm96_audio_commit"]
-        pub fn wasm96_audio_commit(write_index_frames: u32);
+        // Audio (push-based, interleaved i16)
+        #[link_name = "wasm96_audio_config"]
+        pub fn wasm96_audio_config(sample_rate: u32, channels: u32) -> u32;
+        #[link_name = "wasm96_audio_push_i16"]
+        pub fn wasm96_audio_push_i16(ptr: u32, frames: u32) -> u32;
         #[link_name = "wasm96_audio_drain"]
         pub fn wasm96_audio_drain(max_frames: u32) -> u32;
 
@@ -154,92 +146,31 @@ pub mod sys {
 pub mod video {
     use super::{PixelFormat, sys};
 
-    /// A configured framebuffer in guest memory.
+    /// Configure the host-side framebuffer spec.
     ///
-    /// The pointer is a 32-bit offset into guest linear memory.
-    #[derive(Copy, Clone, Debug)]
-    pub struct Framebuffer {
-        pub ptr: u32,
-        pub width: u32,
-        pub height: u32,
-        pub pitch_bytes: u32,
-        pub format: PixelFormat,
+    /// Returns `true` on success.
+    pub fn config(width: u32, height: u32, format: PixelFormat) -> bool {
+        unsafe { sys::wasm96_video_config(width, height, format as u32) != 0 }
     }
 
-    impl Framebuffer {
-        /// Total framebuffer byte length (height * pitch).
-        pub const fn byte_len(&self) -> u32 {
-            self.height.saturating_mul(self.pitch_bytes)
-        }
-
-        /// Get a mutable byte slice view for the framebuffer.
-        ///
-        /// # Safety
-        /// - `ptr` must point to valid guest linear memory for `byte_len()` bytes.
-        /// - You must respect `pitch_bytes` when writing rows.
-        pub unsafe fn as_bytes_mut<'a>(&self) -> &'a mut [u8] {
-            unsafe {
-                core::slice::from_raw_parts_mut(self.ptr as *mut u8, self.byte_len() as usize)
-            }
-        }
-
-        /// Get a mutable slice view for 32bpp pixels (XRGB8888).
-        ///
-        /// # Panics
-        /// Panics if the format is not `Xrgb8888` or pitch is not a multiple of 4.
-        ///
-        /// # Safety
-        /// Same as `as_bytes_mut`.
-        pub unsafe fn as_u32_pixels_mut<'a>(&self) -> &'a mut [u32] {
-            assert_eq!(self.format, PixelFormat::Xrgb8888);
-            assert_eq!(self.pitch_bytes % 4, 0);
-            let len_u32 = (self.byte_len() / 4) as usize;
-            unsafe { core::slice::from_raw_parts_mut(self.ptr as *mut u32, len_u32) }
-        }
-
-        /// Get a mutable slice view for RGB565 pixels.
-        ///
-        /// # Panics
-        /// Panics if the format is not `Rgb565` or pitch is not a multiple of 2.
-        ///
-        /// # Safety
-        /// Same as `as_bytes_mut`.
-        pub unsafe fn as_u16_pixels_mut<'a>(&self) -> &'a mut [u16] {
-            assert_eq!(self.format, PixelFormat::Rgb565);
-            assert_eq!(self.pitch_bytes % 2, 0);
-            let len_u16 = (self.byte_len() / 2) as usize;
-            unsafe { core::slice::from_raw_parts_mut(self.ptr as *mut u16, len_u16) }
-        }
+    /// Upload a full frame to the host.
+    ///
+    /// `ptr` is a u32 offset into guest linear memory.
+    /// `byte_len` must be exactly `height * pitch_bytes` for the configured framebuffer.
+    ///
+    /// Returns `true` on success.
+    pub fn upload(ptr: u32, byte_len: u32, pitch_bytes: u32) -> bool {
+        unsafe { sys::wasm96_video_upload(ptr, byte_len, pitch_bytes) != 0 }
     }
 
-    /// Request a framebuffer from the host.
-    ///
-    /// Returns `None` if the request failed (`ptr == 0`).
-    ///
-    /// Note: The current host implementation may stub this out and always fail.
-    pub fn request(width: u32, height: u32, format: PixelFormat) -> Option<Framebuffer> {
-        let ptr = unsafe { sys::wasm96_video_request(width, height, format as u32) };
-        if ptr == 0 {
-            return None;
-        }
-        let pitch_bytes = unsafe { sys::wasm96_video_pitch() };
-        Some(Framebuffer {
-            ptr,
-            width,
-            height,
-            pitch_bytes,
-            format,
-        })
-    }
-
-    /// Present the last requested framebuffer to the host.
+    /// Present the last uploaded framebuffer to the host.
     pub fn present() {
         unsafe { sys::wasm96_video_present() }
     }
 
-    /// Query the current pitch in bytes (0 means not configured).
-    pub fn pitch_bytes() -> u32 {
-        unsafe { sys::wasm96_video_pitch() }
+    /// Convenience helper to compute pitch bytes for a given width+format.
+    pub const fn pitch_bytes(width: u32, format: PixelFormat) -> u32 {
+        width * format.bytes_per_pixel()
     }
 }
 
@@ -247,80 +178,27 @@ pub mod video {
 pub mod audio {
     use super::sys;
 
-    /// A configured audio ringbuffer in guest memory.
+    /// Configure host-side audio output format.
     ///
-    /// The pointer is a 32-bit offset into guest linear memory and should be treated
-    /// as an `i16` sample buffer (interleaved).
-    #[derive(Copy, Clone, Debug)]
-    pub struct RingBuffer {
-        pub ptr: u32,
-        pub sample_rate: u32,
-        pub channels: u32,
-        pub capacity_frames: u32,
+    /// Returns `true` on success.
+    pub fn config(sample_rate: u32, channels: u32) -> bool {
+        unsafe { sys::wasm96_audio_config(sample_rate, channels) != 0 }
     }
 
-    impl RingBuffer {
-        /// Total number of i16 samples stored in the buffer.
-        pub const fn capacity_samples(&self) -> u32 {
-            self.capacity_frames.saturating_mul(self.channels)
-        }
-
-        /// Total size in bytes of the buffer.
-        pub const fn byte_len(&self) -> u32 {
-            self.capacity_samples().saturating_mul(2)
-        }
-
-        /// View the ringbuffer as a mutable i16 slice.
-        ///
-        /// # Safety
-        /// - `ptr` must point to valid guest linear memory for `byte_len()` bytes.
-        pub unsafe fn as_i16_mut<'a>(&self) -> &'a mut [i16] {
-            unsafe {
-                core::slice::from_raw_parts_mut(
-                    self.ptr as *mut i16,
-                    self.capacity_samples() as usize,
-                )
-            }
-        }
-    }
-
-    /// Request an audio ringbuffer from the host.
+    /// Push interleaved i16 samples to the host.
     ///
-    /// Returns `None` if the request failed (`ptr == 0`).
+    /// `ptr` is a u32 offset into guest linear memory that points to `frames * channels`
+    /// i16 samples (little-endian).
     ///
-    /// Note: The current host implementation may stub this out and always fail.
-    pub fn request(sample_rate: u32, channels: u32, capacity_frames: u32) -> Option<RingBuffer> {
-        let ptr = unsafe { sys::wasm96_audio_request(sample_rate, channels, capacity_frames) };
-        if ptr == 0 {
-            return None;
-        }
-        let cap = unsafe { sys::wasm96_audio_capacity_frames() };
-        Some(RingBuffer {
-            ptr,
-            sample_rate,
-            channels,
-            capacity_frames: cap,
-        })
+    /// Returns number of frames accepted (0 on failure).
+    pub fn push_i16(ptr: u32, frames: u32) -> u32 {
+        unsafe { sys::wasm96_audio_push_i16(ptr, frames) }
     }
 
-    /// Get producer write index in frames.
-    pub fn write_index() -> u32 {
-        unsafe { sys::wasm96_audio_write_index() }
-    }
-
-    /// Get consumer read index in frames.
-    pub fn read_index() -> u32 {
-        unsafe { sys::wasm96_audio_read_index() }
-    }
-
-    /// Commit a new producer write index (frames, modulo capacity).
-    pub fn commit(write_index_frames: u32) {
-        unsafe { sys::wasm96_audio_commit(write_index_frames) }
-    }
-
-    /// Ask the host to drain up to `max_frames` into libretro audio output.
+    /// Drain up to `max_frames` from the host-side queue into libretro.
     ///
-    /// If `max_frames == 0`, the host drains as much as it wants.
+    /// If `max_frames == 0`, the host drains everything it currently has queued.
+    /// Returns frames drained.
     pub fn drain(max_frames: u32) -> u32 {
         unsafe { sys::wasm96_audio_drain(max_frames) }
     }

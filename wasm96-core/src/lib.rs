@@ -1,9 +1,10 @@
 //! wasm96-core: a libretro core that loads and runs a guest WASM/WAT module.
 //!
-//! This crate implements a **buffer-based ABI**:
-//! - The guest requests a framebuffer and an audio ringbuffer (both live in guest memory).
-//! - The guest writes into those buffers.
-//! - The guest calls host imports to present video / commit+drain audio.
+//! This crate implements an **upload-based ABI**:
+//! - The guest owns its allocations in WASM linear memory.
+//! - The host owns its video/audio buffers in system memory.
+//! - The guest uploads full-frame video and pushes audio samples by passing pointers into
+//!   guest linear memory; the host copies into system memory and presents/drains to libretro.
 //!
 //! Required guest export:
 //! - `wasm96_frame()`
@@ -54,11 +55,6 @@ impl Wasm96Core {
         self.env = Some(FunctionEnv::new(&mut self.store, ()));
         let env = self.env.as_ref().unwrap().clone();
 
-        // Allocation strategy:
-        // - Host import closures call `crate::state::call_guest_alloc/free`.
-        // - Those functions are wired after instantiation by resolving guest exports and storing
-        //   them in global state (`state::set_guest_allocators`).
-
         // Note: all imports are under module `env` (see abi::IMPORT_MODULE),
         // because wasm32 targets typically expect `"env"` for imports.
         wasmer::imports! {
@@ -70,101 +66,61 @@ impl Wasm96Core {
                     |_env: FunctionEnvMut<()>| -> u32 { ABI_VERSION }
                 ),
 
-                // --- Allocation helpers ---
-                //
-                // These are currently stubbed out so the core builds cleanly.
-                // The intended design is that the *core* owns framebuffer/audio allocations,
-                // not the guest. That requires a handle-based API (not raw guest pointers).
-                //
-                // For now, allocation requests always fail (return 0) and free is a no-op.
-                abi::host_imports::ALLOC => wasmer::Function::new_typed_with_env(
+                // --- Video (upload-based) ---
+
+                // Configure host-side system-memory framebuffer spec.
+                abi::host_imports::VIDEO_CONFIG => wasmer::Function::new_typed_with_env(
                     &mut self.store,
                     &env,
-                    |_env: FunctionEnvMut<()>, _size: u32, _align: u32| -> u32 { 0 }
-                ),
-
-                abi::host_imports::FREE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, _ptr: u32, _size: u32, _align: u32| { }
-                ),
-
-                // --- Video (buffer-based) ---
-
-                // Guest requests a framebuffer for (w,h,fmt).
-                //
-                // NOTE: This currently returns 0 to indicate failure because the core is being
-                // migrated to a host-owned allocation model. Host-owned allocations should be
-                // exposed to the guest via handles + copy APIs (not raw guest pointers).
-                abi::host_imports::VIDEO_REQUEST => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, _width: u32, _height: u32, _pixel_format: u32| -> u32 {
-                        0
+                    |_env: FunctionEnvMut<()>, width: u32, height: u32, pixel_format: u32| -> u32 {
+                        av::video_config(width, height, pixel_format) as u32
                     }
                 ),
 
-                // Present framebuffer to libretro.
+                // Upload full frame from guest linear memory into host-side system-memory buffer.
+                abi::host_imports::VIDEO_UPLOAD => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, src_ptr: u32, byte_len: u32, pitch_bytes: u32| -> u32 {
+                        av::video_upload(&env, src_ptr, byte_len, pitch_bytes).unwrap_or(false) as u32
+                    }
+                ),
+
+                // Present last uploaded host-side framebuffer to libretro.
                 abi::host_imports::VIDEO_PRESENT => wasmer::Function::new_typed_with_env(
                     &mut self.store,
                     &env,
-                    |env: FunctionEnvMut<()>| {
-                        let _ = av::video_present(&env);
+                    |_env: FunctionEnvMut<()>| {
+                        av::video_present_host();
                     }
                 ),
 
-                // Get pitch in bytes.
-                abi::host_imports::VIDEO_PITCH => wasmer::Function::new_typed_with_env(
+                // --- Audio (upload-based) ---
+
+                // Configure host-side audio format.
+                abi::host_imports::AUDIO_CONFIG => wasmer::Function::new_typed_with_env(
                     &mut self.store,
                     &env,
-                    |_env: FunctionEnvMut<()>| -> u32 { av::video_pitch() }
-                ),
-
-                // --- Audio (ringbuffer-based) ---
-
-                // Guest requests an audio ringbuffer.
-                //
-                // NOTE: This currently returns 0 to indicate failure because the core is being
-                // migrated to a host-owned allocation model (handle-based).
-                abi::host_imports::AUDIO_REQUEST => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, _sample_rate: u32, _channels: u32, _capacity_frames: u32| -> u32 {
-                        0
+                    |_env: FunctionEnvMut<()>, sample_rate: u32, channels: u32| -> u32 {
+                        av::audio_config(sample_rate, channels).unwrap_or(false) as u32
                     }
                 ),
 
-                abi::host_imports::AUDIO_CAPACITY_FRAMES => wasmer::Function::new_typed_with_env(
+                // Push interleaved i16 frames from guest linear memory into host-side buffer.
+                abi::host_imports::AUDIO_PUSH_I16 => wasmer::Function::new_typed_with_env(
                     &mut self.store,
                     &env,
-                    |_env: FunctionEnvMut<()>| -> u32 { av::audio_capacity_frames() }
-                ),
-
-                abi::host_imports::AUDIO_WRITE_INDEX => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>| -> u32 { av::audio_write_index_frames() }
-                ),
-
-                abi::host_imports::AUDIO_READ_INDEX => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>| -> u32 { av::audio_read_index_frames() }
-                ),
-
-                abi::host_imports::AUDIO_COMMIT => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, write_index_frames: u32| {
-                        av::audio_commit(write_index_frames);
+                    |env: FunctionEnvMut<()>, src_ptr: u32, frames: u32| -> u32 {
+                        av::audio_push_i16(&env, src_ptr, frames).unwrap_or(0)
                     }
                 ),
 
+                // Drain host-side audio buffer into libretro. Returns frames drained.
                 abi::host_imports::AUDIO_DRAIN => wasmer::Function::new_typed_with_env(
                     &mut self.store,
                     &env,
-                    |env: FunctionEnvMut<()>, max_frames: u32| -> u32 {
-                        av::audio_drain(&env, max_frames).unwrap_or(0)
+                    |_env: FunctionEnvMut<()>, max_frames: u32| -> u32 {
+                        av::audio_drain_host(max_frames)
                     }
                 ),
 
@@ -245,21 +201,9 @@ impl Wasm96Core {
         let mem = instance.exports.get_memory("memory").map_err(|_| ())?;
         state::set_guest_memory(mem);
 
-        // Resolve guest allocator exports and store into global state (used by import closures).
-        //
-        // IMPORTANT: do not store these on `self` to avoid borrow conflicts during instantiation.
-        let guest_alloc = instance
-            .exports
-            .get_function(abi::host_imports::ALLOC)
-            .ok()
-            .cloned();
-        let guest_free = instance
-            .exports
-            .get_function(abi::host_imports::FREE)
-            .ok()
-            .cloned();
-
-        state::set_guest_allocators(guest_alloc, guest_free);
+        // Upload-based ABI: the host does not allocate inside guest memory.
+        // The guest manages its own allocations; the host only reads guest memory
+        // when the guest uploads/pushes buffers.
 
         // Store instance/entrypoints.
         self.instance = Some(instance);

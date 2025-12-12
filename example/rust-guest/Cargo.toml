@@ -1,0 +1,25 @@
+[package]
+name = "rust_guest"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+# Guest is a WASM module loaded by wasm96-core, so build as a cdylib.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Depend on the workspace SDK crate via relative path.
+wasm96-sdk = { path = "../../wasm96-sdk", default-features = false }
+
+[features]
+# Default to std for easier development; you can disable for wasm32-unknown-unknown if desired.
+default = ["std"]
+std = ["wasm96-sdk/std"]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true

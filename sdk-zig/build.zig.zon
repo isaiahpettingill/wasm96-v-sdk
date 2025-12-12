@@ -1,0 +1,9 @@
+.{
+    .name = "wasm96",
+    .version = "0.1.0",
+    .dependencies = .{},
+    .paths = .{
+        "wasm96.zig",
+        "build.zig.zon",
+    },
+}
