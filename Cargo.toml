@@ -14,10 +14,10 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 # Fill these in if you want (not required):
-# authors = ["Your Name <you@example.com>"]
-# repository = "https://github.com/you/wasm96"
-# homepage = "https://github.com/you/wasm96"
-# documentation = "https://github.com/you/wasm96"
+authors = ["isaiahpettingill"]
+repository = "https://github.com/isaiahpettingill/wasm96"
+homepage = "https://github.com/isaiahpettingill/wasm96"
+documentation = "https://github.com/isaiahpettingill/wasm96"
 
 [workspace.dependencies]
 # Core dependencies
