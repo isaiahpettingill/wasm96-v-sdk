@@ -12,8 +12,20 @@ crate-type = ["cdylib", "rlib"]
 libretro-backend = { workspace = true }
 libretro-sys = "0.1.1"
 wasmer = { workspace = true }
+
+
+# Rendering / assets
+fontdue = "0.9.3"
+gif = "0.13.1"
+resvg = { version = "0.44.0", default-features = false, features = ["text"] }
+lazy_static = "1.4"
+
 # Used to parse `.wat` text into `.wasm` bytes before passing to Wasmer.
 wat = "1.243.0"
+hound = "3.5.1"
+qoaudio = "0.1.0"
+xmrs = { version = "0.9.7", features = ["import"] }
+xmrsplayer = { version = "0.9.7", features = ["demo"] }
 
 [profile.dev]
 panic = "abort"

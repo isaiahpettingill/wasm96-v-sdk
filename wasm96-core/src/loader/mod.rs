@@ -74,7 +74,7 @@ pub fn normalize_to_wasm(rom_bytes: &[u8]) -> Result<Detected, LoadError> {
 #[derive(Clone, Debug)]
 pub struct Detected {
     pub format: DetectedFormat,
-    /// Always valid WASM bytes.
+    /// Always valid WASM bytes (for WASM/WAT inputs).
     pub wasm_bytes: Vec<u8>,
 }
 
@@ -83,7 +83,7 @@ pub struct Detected {
 /// Rules:
 /// - If the first 4 bytes are `\0asm`, treat as WASM.
 /// - Else, after stripping UTF-8 BOM / leading whitespace, if the first non-ws byte is `(`,
-///   treat as WAT (common WAT starts with `(module ...`).
+///   treat as WAT (common WAT starts with `(module ...)`).
 ///
 /// This intentionally avoids requiring valid UTF-8 for WAT; `wat::parse_bytes` accepts bytes.
 pub fn detect_format(bytes: &[u8]) -> Option<DetectedFormat> {

@@ -12,6 +12,56 @@ use libretro_backend::RuntimeHandle;
 use std::sync::{Mutex, OnceLock};
 use wasmer::Memory;
 
+/// A single host-side “audio channel” (a.k.a. a mixing voice).
+///
+/// This is used for higher-level playback APIs (e.g. `play_wav`, `play_ogg`, etc.)
+/// where the host decodes and mixes audio. Guests get back an `id` that can be
+/// adjusted (volume/pan/loop/stop) without pushing raw samples every frame.
+///
+/// NOTE: Actual decoding/mixing logic lives elsewhere (e.g. `av`); this is only state.
+#[derive(Debug, Clone)]
+pub struct AudioChannel {
+    /// Whether this channel is currently active/playing.
+    pub active: bool,
+
+    /// Channel volume in Q8.8 fixed-point (256 = 1.0x).
+    pub volume_q8_8: u32,
+
+    /// Pan in i16 domain: -32768 = full left, 0 = center, 32767 = full right.
+    pub pan_i16: i32,
+
+    /// Whether playback should loop when reaching end.
+    pub loop_enabled: bool,
+
+    /// Interleaved stereo PCM samples (i16) for this channel.
+    ///
+    /// This is a simple representation that enables mixing without requiring the
+    /// guest to continuously feed audio. Decoders can fill this buffer and reset
+    /// `position_frames` as needed.
+    pub pcm_stereo: Vec<i16>,
+
+    /// Current playback position in *frames* (not i16 samples).
+    /// One frame = 2 i16 samples (L, R).
+    pub position_frames: usize,
+
+    /// Source sample rate for this channel's PCM.
+    pub sample_rate: u32,
+}
+
+impl Default for AudioChannel {
+    fn default() -> Self {
+        Self {
+            active: false,
+            volume_q8_8: 256,
+            pan_i16: 0,
+            loop_enabled: false,
+            pcm_stereo: Vec::new(),
+            position_frames: 0,
+            sample_rate: 44100,
+        }
+    }
+}
+
 /// Global core state accessed from:
 /// - `Core::on_run` (to set the current `RuntimeHandle`)
 /// - Wasmer host import functions
@@ -73,10 +123,28 @@ impl Default for VideoState {
 /// Host-owned audio buffer state.
 #[derive(Debug)]
 pub struct AudioState {
+    /// Output sample rate (what libretro expects).
     pub sample_rate: u32,
 
-    /// Host-owned audio staging buffer (interleaved i16).
+    /// Guest-provided staging buffer (interleaved i16 stereo).
+    ///
+    /// This is still supported for “raw push” style audio.
     pub host_queue: Vec<i16>,
+
+    /// Host-mixed playback channels (decoded assets like WAV/QOA/M4A/OGG).
+    ///
+    /// Guests can trigger playback via higher-level audio APIs and the core will mix
+    /// these channels into the output stream.
+    pub channels: Vec<AudioChannel>,
+
+    /// Next id to assign for a new `AudioChannel`.
+    pub next_channel_id: u32,
+
+    /// Mapping from public channel id to index in `channels`.
+    ///
+    /// NOTE: Kept as a simple vec-of-pairs to avoid pulling in a HashMap in state;
+    /// the number of channels is expected to be small.
+    pub channel_id_to_index: Vec<(u32, usize)>,
 }
 
 impl Default for AudioState {
@@ -84,6 +152,10 @@ impl Default for AudioState {
         Self {
             sample_rate: 44100,
             host_queue: Vec::new(),
+
+            channels: Vec::new(),
+            next_channel_id: 1,
+            channel_id_to_index: Vec::new(),
         }
     }
 }

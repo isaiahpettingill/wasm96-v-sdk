@@ -14,6 +14,7 @@ mod loader;
 mod state;
 
 use crate::abi::{GuestEntrypoints, IMPORT_MODULE};
+use crate::state::global;
 use libretro_backend::{Core, CoreInfo, RuntimeHandle, libretro_core};
 use wasmer::{FunctionEnv, FunctionEnvMut, Imports, Store};
 
@@ -132,6 +133,142 @@ impl Wasm96Core {
                     }
                 ),
 
+                abi::host_imports::GRAPHICS_TRIANGLE => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32| {
+                        av::graphics_triangle(x1, y1, x2, y2, x3, y3);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_TRIANGLE_OUTLINE => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32| {
+                        av::graphics_triangle_outline(x1, y1, x2, y2, x3, y3);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_BEZIER_QUADRATIC => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, cx: i32, cy: i32, x2: i32, y2: i32, segments: u32| {
+                        av::graphics_bezier_quadratic(x1, y1, cx, cy, x2, y2, segments);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_BEZIER_CUBIC => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, cx1: i32, cy1: i32, cx2: i32, cy2: i32, x2: i32, y2: i32, segments: u32| {
+                        av::graphics_bezier_cubic(x1, y1, cx1, cy1, cx2, cy2, x2, y2, segments);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_PILL => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, x: i32, y: i32, w: u32, h: u32| {
+                        av::graphics_pill(x, y, w, h);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_PILL_OUTLINE => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, x: i32, y: i32, w: u32, h: u32| {
+                        av::graphics_pill_outline(x, y, w, h);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_SVG_CREATE => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| -> u32 {
+                        av::graphics_svg_create(&env, ptr, len)
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_SVG_DRAW => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, id: u32, x: i32, y: i32, w: u32, h: u32| {
+                        av::graphics_svg_draw(id, x, y, w, h);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_SVG_DESTROY => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, id: u32| {
+                        av::graphics_svg_destroy(id);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_GIF_CREATE => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| -> u32 {
+                        av::graphics_gif_create(&env, ptr, len)
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_GIF_DRAW => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, id: u32, x: i32, y: i32| {
+                        av::graphics_gif_draw(id, x, y);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_GIF_DRAW_SCALED => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, id: u32, x: i32, y: i32, w: u32, h: u32| {
+                        av::graphics_gif_draw_scaled(id, x, y, w, h);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_GIF_DESTROY => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, id: u32| {
+                        av::graphics_gif_destroy(id);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_FONT_UPLOAD_TTF => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| -> u32 {
+                        av::graphics_font_upload_ttf(&env, ptr, len)
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_FONT_USE_SPLEEN => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |_env: FunctionEnvMut<()>, size: u32| -> u32 {
+                        av::graphics_font_use_spleen(size)
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_TEXT => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, x: i32, y: i32, font: u32, ptr: u32, len: u32| {
+                        av::graphics_text(x, y, font, &env, ptr, len);
+                    }
+                ),
+
+                abi::host_imports::GRAPHICS_TEXT_MEASURE => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, font: u32, ptr: u32, len: u32| -> u64 {
+                        av::graphics_text_measure(font, &env, ptr, len)
+                    }
+                ),
+
                 // --- Audio ---
 
                 abi::host_imports::AUDIO_INIT => wasmer::Function::new_typed_with_env(
@@ -147,6 +284,30 @@ impl Wasm96Core {
                     &env,
                     |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
                         let _ = av::audio_push_samples(&env, ptr, len);
+                    }
+                ),
+
+                abi::host_imports::AUDIO_PLAY_WAV => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
+                        let _ = av::audio_play_wav(&env, ptr, len);
+                    }
+                ),
+
+                abi::host_imports::AUDIO_PLAY_QOA => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
+                        let _ = av::audio_play_qoa(&env, ptr, len);
+                    }
+                ),
+
+                abi::host_imports::AUDIO_PLAY_XM => wasmer::Function::new_typed_with_env(
+                    &mut self.store,
+                    &env,
+                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
+                        let _ = av::audio_play_xm(&env, ptr, len);
                     }
                 ),
 
@@ -191,12 +352,31 @@ impl Wasm96Core {
                 ),
 
                 // --- System ---
-                // (Placeholder for now)
+
                 abi::host_imports::SYSTEM_LOG => wasmer::Function::new_typed_with_env(
                     &mut self.store,
                     &env,
-                    |_env: FunctionEnvMut<()>, _ptr: u32, _len: u32| {
-                        // TODO: Implement logging
+                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
+                        // Best-effort: read UTF-8 from guest memory and log to stdout.
+                        //
+                        // If memory isn't available or the guest passes garbage, we ignore.
+                        let memory_ptr = {
+                            let s = global().lock().unwrap();
+                            s.memory
+                        };
+                        if memory_ptr.is_null() {
+                            return;
+                        }
+
+                        let mem = unsafe { &*memory_ptr };
+                        let view = mem.view(&env);
+
+                        let mut buf = vec![0u8; len as usize];
+                        if view.read(ptr as u64, &mut buf).is_ok() {
+                            if let Ok(msg) = core::str::from_utf8(&buf) {
+                                println!("[wasm96] {msg}");
+                            }
+                        }
                     }
                 ),
 
@@ -204,10 +384,28 @@ impl Wasm96Core {
                     &mut self.store,
                     &env,
                     |_env: FunctionEnvMut<()>| -> u64 {
-                        // TODO: Implement time
-                        0
+                        // Host time in milliseconds (monotonic-ish).
+                        //
+                        // This uses libretro's monotonic time if available elsewhere in the future,
+                        // but for now use std time since UNIX epoch.
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                        now.as_millis() as u64
                     }
                 ),
+
+                // --- New graphics APIs (stubs for now; wired up in av/graphics extensions) ---
+                // These are added so guest WASM modules can link, even before the renderer is finalized.
+                //
+                // NOTE: The actual ABI constants must exist in `abi::host_imports` for these to be reachable.
+
+                // abi::host_imports::GRAPHICS_TRIANGLE => wasmer::Function::new_typed_with_env(
+                //     &mut self.store,
+                //     &env,
+                //     |_env: FunctionEnvMut<()>, _x1: i32, _y1: i32, _x2: i32, _y2: i32, _x3: i32, _y3: i32| {
+                //         // TODO: av::graphics_triangle_filled(...)
+                //     }
+                // ),
             }
         }
     }

@@ -38,6 +38,14 @@ pub enum Button {
     R3 = 15,
 }
 
+/// Text size dimensions.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TextSize {
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Low-level raw ABI imports.
 #[allow(non_camel_case_types)]
 pub mod sys {
@@ -64,6 +72,75 @@ pub mod sys {
         #[link_name = "wasm96_graphics_image"]
         pub fn graphics_image(x: i32, y: i32, w: u32, h: u32, ptr: u32, len: u32);
 
+        #[link_name = "wasm96_graphics_triangle"]
+        pub fn graphics_triangle(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32);
+
+        #[link_name = "wasm96_graphics_triangle_outline"]
+        pub fn graphics_triangle_outline(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32);
+
+        #[link_name = "wasm96_graphics_bezier_quadratic"]
+        pub fn graphics_bezier_quadratic(
+            x1: i32,
+            y1: i32,
+            cx: i32,
+            cy: i32,
+            x2: i32,
+            y2: i32,
+            segments: u32,
+        );
+
+        #[link_name = "wasm96_graphics_bezier_cubic"]
+        pub fn graphics_bezier_cubic(
+            x1: i32,
+            y1: i32,
+            cx1: i32,
+            cy1: i32,
+            cx2: i32,
+            cy2: i32,
+            x2: i32,
+            y2: i32,
+            segments: u32,
+        );
+
+        #[link_name = "wasm96_graphics_pill"]
+        pub fn graphics_pill(x: i32, y: i32, w: u32, h: u32);
+
+        #[link_name = "wasm96_graphics_pill_outline"]
+        pub fn graphics_pill_outline(x: i32, y: i32, w: u32, h: u32);
+
+        #[link_name = "wasm96_graphics_svg_create"]
+        pub fn graphics_svg_create(ptr: u32, len: u32) -> u32;
+
+        #[link_name = "wasm96_graphics_svg_draw"]
+        pub fn graphics_svg_draw(id: u32, x: i32, y: i32, w: u32, h: u32);
+
+        #[link_name = "wasm96_graphics_svg_destroy"]
+        pub fn graphics_svg_destroy(id: u32);
+
+        #[link_name = "wasm96_graphics_gif_create"]
+        pub fn graphics_gif_create(ptr: u32, len: u32) -> u32;
+
+        #[link_name = "wasm96_graphics_gif_draw"]
+        pub fn graphics_gif_draw(id: u32, x: i32, y: i32);
+
+        #[link_name = "wasm96_graphics_gif_draw_scaled"]
+        pub fn graphics_gif_draw_scaled(id: u32, x: i32, y: i32, w: u32, h: u32);
+
+        #[link_name = "wasm96_graphics_gif_destroy"]
+        pub fn graphics_gif_destroy(id: u32);
+
+        #[link_name = "wasm96_graphics_font_upload_ttf"]
+        pub fn graphics_font_upload_ttf(ptr: u32, len: u32) -> u32;
+
+        #[link_name = "wasm96_graphics_font_use_spleen"]
+        pub fn graphics_font_use_spleen(size: u32) -> u32;
+
+        #[link_name = "wasm96_graphics_text"]
+        pub fn graphics_text(x: i32, y: i32, font: u32, ptr: u32, len: u32);
+
+        #[link_name = "wasm96_graphics_text_measure"]
+        pub fn graphics_text_measure(font: u32, ptr: u32, len: u32) -> u64;
+
         // Input
         #[link_name = "wasm96_input_is_button_down"]
         pub fn input_is_button_down(port: u32, btn: u32) -> u32;
@@ -82,6 +159,15 @@ pub mod sys {
         #[link_name = "wasm96_audio_push_samples"]
         pub fn audio_push_samples(ptr: u32, len: u32);
 
+        #[link_name = "wasm96_audio_play_wav"]
+        pub fn audio_play_wav(ptr: u32, len: u32);
+
+        #[link_name = "wasm96_audio_play_qoa"]
+        pub fn audio_play_qoa(ptr: u32, len: u32);
+
+        #[link_name = "wasm96_audio_play_xm"]
+        pub fn audio_play_xm(ptr: u32, len: u32);
+
         // System
         #[link_name = "wasm96_system_log"]
         pub fn system_log(ptr: u32, len: u32);
@@ -93,6 +179,7 @@ pub mod sys {
 /// Graphics API.
 pub mod graphics {
     use super::sys;
+    use crate::TextSize;
 
     /// Set the screen dimensions.
     pub fn set_size(width: u32, height: u32) {
@@ -144,6 +231,106 @@ pub mod graphics {
     pub fn image(x: i32, y: i32, w: u32, h: u32, data: &[u8]) {
         unsafe { sys::graphics_image(x, y, w, h, data.as_ptr() as u32, data.len() as u32) }
     }
+
+    /// Draw a filled triangle.
+    pub fn triangle(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) {
+        unsafe { sys::graphics_triangle(x1, y1, x2, y2, x3, y3) }
+    }
+
+    /// Draw a triangle outline.
+    pub fn triangle_outline(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) {
+        unsafe { sys::graphics_triangle_outline(x1, y1, x2, y2, x3, y3) }
+    }
+
+    /// Draw a quadratic Bezier curve.
+    pub fn bezier_quadratic(x1: i32, y1: i32, cx: i32, cy: i32, x2: i32, y2: i32, segments: u32) {
+        unsafe { sys::graphics_bezier_quadratic(x1, y1, cx, cy, x2, y2, segments) }
+    }
+
+    /// Draw a cubic Bezier curve.
+    pub fn bezier_cubic(
+        x1: i32,
+        y1: i32,
+        cx1: i32,
+        cy1: i32,
+        cx2: i32,
+        cy2: i32,
+        x2: i32,
+        y2: i32,
+        segments: u32,
+    ) {
+        unsafe { sys::graphics_bezier_cubic(x1, y1, cx1, cy1, cx2, cy2, x2, y2, segments) }
+    }
+
+    /// Draw a filled pill.
+    pub fn pill(x: i32, y: i32, w: u32, h: u32) {
+        unsafe { sys::graphics_pill(x, y, w, h) }
+    }
+
+    /// Draw a pill outline.
+    pub fn pill_outline(x: i32, y: i32, w: u32, h: u32) {
+        unsafe { sys::graphics_pill_outline(x, y, w, h) }
+    }
+
+    /// Create an SVG resource.
+    pub fn svg_create(data: &[u8]) -> u32 {
+        unsafe { sys::graphics_svg_create(data.as_ptr() as u32, data.len() as u32) }
+    }
+
+    /// Draw an SVG resource.
+    pub fn svg_draw(id: u32, x: i32, y: i32, w: u32, h: u32) {
+        unsafe { sys::graphics_svg_draw(id, x, y, w, h) }
+    }
+
+    /// Destroy an SVG resource.
+    pub fn svg_destroy(id: u32) {
+        unsafe { sys::graphics_svg_destroy(id) }
+    }
+
+    /// Create a GIF resource.
+    pub fn gif_create(data: &[u8]) -> u32 {
+        unsafe { sys::graphics_gif_create(data.as_ptr() as u32, data.len() as u32) }
+    }
+
+    /// Draw a GIF resource at natural size.
+    pub fn gif_draw(id: u32, x: i32, y: i32) {
+        unsafe { sys::graphics_gif_draw(id, x, y) }
+    }
+
+    /// Draw a GIF resource scaled.
+    pub fn gif_draw_scaled(id: u32, x: i32, y: i32, w: u32, h: u32) {
+        unsafe { sys::graphics_gif_draw_scaled(id, x, y, w, h) }
+    }
+
+    /// Destroy a GIF resource.
+    pub fn gif_destroy(id: u32) {
+        unsafe { sys::graphics_gif_destroy(id) }
+    }
+
+    /// Upload a TTF font.
+    pub fn font_upload_ttf(data: &[u8]) -> u32 {
+        unsafe { sys::graphics_font_upload_ttf(data.as_ptr() as u32, data.len() as u32) }
+    }
+
+    /// Use a built-in Spleen font.
+    pub fn font_use_spleen(size: u32) -> u32 {
+        unsafe { sys::graphics_font_use_spleen(size) }
+    }
+
+    /// Draw text.
+    pub fn text(x: i32, y: i32, font: u32, text: &str) {
+        unsafe { sys::graphics_text(x, y, font, text.as_ptr() as u32, text.len() as u32) }
+    }
+
+    /// Measure text.
+    pub fn text_measure(font: u32, text: &str) -> TextSize {
+        let packed =
+            unsafe { sys::graphics_text_measure(font, text.as_ptr() as u32, text.len() as u32) };
+        TextSize {
+            width: (packed >> 32) as u32,
+            height: (packed & 0xFFFFFFFF) as u32,
+        }
+    }
 }
 
 /// Input API.
@@ -191,6 +378,25 @@ pub mod audio {
     pub fn push_samples(samples: &[i16]) {
         unsafe { sys::audio_push_samples(samples.as_ptr() as u32, samples.len() as u32) }
     }
+
+    /// Play a WAV file.
+    /// The WAV data is decoded and played as a one-shot audio channel.
+    pub fn play_wav(data: &[u8]) {
+        unsafe { sys::audio_play_wav(data.as_ptr() as u32, data.len() as u32) }
+    }
+
+    /// Play a QOA file.
+    /// The QOA data is decoded and played as a looping audio channel.
+    pub fn play_qoa(data: &[u8]) {
+        unsafe { sys::audio_play_qoa(data.as_ptr() as u32, data.len() as u32) }
+    }
+
+    /// Play an XM file.
+    /// Play an XM file.
+    /// The XM data is decoded using xmrsplayer and played as a looping audio channel.
+    pub fn play_xm(data: &[u8]) {
+        unsafe { sys::audio_play_xm(data.as_ptr() as u32, data.len() as u32) }
+    }
 }
 
 /// System API.
@@ -211,6 +417,7 @@ pub mod system {
 /// Convenience prelude for guest apps.
 pub mod prelude {
     pub use crate::Button;
+    pub use crate::TextSize;
     pub use crate::audio;
     pub use crate::graphics;
     pub use crate::input;

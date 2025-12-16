@@ -34,6 +34,19 @@
 //! - `wasm96_audio_init(sample_rate: u32) -> u32`
 //! - `wasm96_audio_push_samples(ptr: u32, len: u32)`
 //!
+//
+// Higher-level audio playback (host-mixed "channels/voices"):
+//! - `wasm96_audio_play_wav(ptr: u32, len: u32)`
+//! - `wasm96_audio_play_qoa(ptr: u32, len: u32)`
+//! - `wasm96_audio_play_xm(ptr: u32, len: u32)`
+//!
+//! Notes:
+//! - These functions are **fire-and-forget** (no handle/id is returned).
+//! - The core decodes audio and mixes it into the output stream.
+//! - WAV decoding aims to support common WAV formats (not just PCM16).
+//! - QOA decoding supports mono and stereo.
+//! - XM decoding uses xmrsplayer to support XM tracker music.
+//!
 //! ### System
 //! - `wasm96_system_log(ptr: u32, len: u32)`
 //! - `wasm96_system_millis() -> u64`
@@ -73,6 +86,40 @@ pub mod host_imports {
     pub const GRAPHICS_CIRCLE_OUTLINE: &str = "wasm96_graphics_circle_outline";
     pub const GRAPHICS_IMAGE: &str = "wasm96_graphics_image";
 
+    pub const GRAPHICS_TRIANGLE: &str = "wasm96_graphics_triangle";
+
+    pub const GRAPHICS_TRIANGLE_OUTLINE: &str = "wasm96_graphics_triangle_outline";
+
+    pub const GRAPHICS_BEZIER_QUADRATIC: &str = "wasm96_graphics_bezier_quadratic";
+
+    pub const GRAPHICS_BEZIER_CUBIC: &str = "wasm96_graphics_bezier_cubic";
+
+    pub const GRAPHICS_PILL: &str = "wasm96_graphics_pill";
+
+    pub const GRAPHICS_PILL_OUTLINE: &str = "wasm96_graphics_pill_outline";
+
+    pub const GRAPHICS_SVG_CREATE: &str = "wasm96_graphics_svg_create";
+
+    pub const GRAPHICS_SVG_DRAW: &str = "wasm96_graphics_svg_draw";
+
+    pub const GRAPHICS_SVG_DESTROY: &str = "wasm96_graphics_svg_destroy";
+
+    pub const GRAPHICS_GIF_CREATE: &str = "wasm96_graphics_gif_create";
+
+    pub const GRAPHICS_GIF_DRAW: &str = "wasm96_graphics_gif_draw";
+
+    pub const GRAPHICS_GIF_DRAW_SCALED: &str = "wasm96_graphics_gif_draw_scaled";
+
+    pub const GRAPHICS_GIF_DESTROY: &str = "wasm96_graphics_gif_destroy";
+
+    pub const GRAPHICS_FONT_UPLOAD_TTF: &str = "wasm96_graphics_font_upload_ttf";
+
+    pub const GRAPHICS_FONT_USE_SPLEEN: &str = "wasm96_graphics_font_use_spleen";
+
+    pub const GRAPHICS_TEXT: &str = "wasm96_graphics_text";
+
+    pub const GRAPHICS_TEXT_MEASURE: &str = "wasm96_graphics_text_measure";
+
     // Input
     pub const INPUT_IS_BUTTON_DOWN: &str = "wasm96_input_is_button_down";
     pub const INPUT_IS_KEY_DOWN: &str = "wasm96_input_is_key_down";
@@ -83,6 +130,12 @@ pub mod host_imports {
     // Audio
     pub const AUDIO_INIT: &str = "wasm96_audio_init";
     pub const AUDIO_PUSH_SAMPLES: &str = "wasm96_audio_push_samples";
+
+    // High-level audio playback (decoded + mixed on host)
+    // Fire-and-forget (no ids/handles returned).
+    pub const AUDIO_PLAY_WAV: &str = "wasm96_audio_play_wav";
+    pub const AUDIO_PLAY_QOA: &str = "wasm96_audio_play_qoa";
+    pub const AUDIO_PLAY_XM: &str = "wasm96_audio_play_xm";
 
     // System
     pub const SYSTEM_LOG: &str = "wasm96_system_log";

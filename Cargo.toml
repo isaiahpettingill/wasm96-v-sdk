@@ -5,6 +5,7 @@ members = [
   "wasm96-sdk",
   "example/rust-guest",
   "example/rust-guest-mp-platformer",
+  "example/rust-guest-showcase",
 ]
 
 # Optional: allows `cargo build` at the workspace root to default to building the core.
@@ -24,6 +25,7 @@ documentation = "https://github.com/isaiahpettingill/wasm96"
 # Core dependencies
 libretro-backend = "0.2.1"
 wasmer = "6.1.0"
+
 
 # SDK dependencies (safe defaults for wasm32 targets; keep minimal)
 # `wee_alloc` is optional but commonly useful in wasm apps; app authors can opt-in.

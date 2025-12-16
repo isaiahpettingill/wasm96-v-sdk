@@ -59,6 +59,57 @@ world wasm96 {
     /// `data` is a sequence of RGBA bytes (4 bytes per pixel).
     /// The host handles clipping and bounds checking.
     image: func(x: s32, y: s32, w: u32, h: u32, data: list<u8>);
+
+    /// Draw a filled triangle with vertices (x1,y1), (x2,y2), (x3,y3) using the current color.
+    triangle: func(x1: s32, y1: s32, x2: s32, y2: s32, x3: s32, y3: s32);
+
+    /// Draw a triangle outline with vertices (x1,y1), (x2,y2), (x3,y3) using the current color.
+    triangle-outline: func(x1: s32, y1: s32, x2: s32, y2: s32, x3: s32, y3: s32);
+
+    /// Draw a quadratic Bezier curve from (x1,y1) to (x2,y2) with control point (cx,cy), tessellated into `segments` lines.
+    bezier-quadratic: func(x1: s32, y1: s32, cx: s32, cy: s32, x2: s32, y2: s32, segments: u32);
+
+    /// Draw a cubic Bezier curve from (x1,y1) to (x2,y2) with control points (cx1,cy1) and (cx2,cy2), tessellated into `segments` lines.
+    bezier-cubic: func(x1: s32, y1: s32, cx1: s32, cy1: s32, cx2: s32, cy2: s32, x2: s32, y2: s32, segments: u32);
+
+    /// Draw a filled pill (rounded rectangle) at (x,y) with size (w,h) using the current color.
+    pill: func(x: s32, y: s32, w: u32, h: u32);
+
+    /// Draw a pill outline at (x,y) with size (w,h) using the current color.
+    pill-outline: func(x: s32, y: s32, w: u32, h: u32);
+
+    /// Create an SVG resource from binary data. Returns a resource ID.
+    svg-create: func(data: list<u8>) -> u32;
+
+    /// Draw the SVG resource at (x,y) scaled to (w,h).
+    svg-draw: func(id: u32, x: s32, y: s32, w: u32, h: u32);
+
+    /// Destroy the SVG resource.
+    svg-destroy: func(id: u32);
+
+    /// Create a GIF resource from binary data. Returns a resource ID.
+    gif-create: func(data: list<u8>) -> u32;
+
+    /// Draw the GIF at (x,y) at its natural size, animating based on time.
+    gif-draw: func(id: u32, x: s32, y: s32);
+
+    /// Draw the GIF at (x,y) scaled to (w,h), animating based on time.
+    gif-draw-scaled: func(id: u32, x: s32, y: s32, w: u32, h: u32);
+
+    /// Destroy the GIF resource.
+    gif-destroy: func(id: u32);
+
+    /// Upload a TTF font from binary data. Returns a font ID.
+    font-upload-ttf: func(data: list<u8>) -> u32;
+
+    /// Use the built-in Spleen bitmap font at the specified size (one of: 8,16,24,32,64). Returns a font ID.
+    font-use-spleen: func(size: u32) -> u32;
+
+    /// Draw text at (x,y) using the specified font and current color.
+    text: func(x: s32, y: s32, font: u32, text: string);
+
+    /// Measure the width and height of the text using the specified font. Returns (width, height).
+    text-measure: func(font: u32, text: string) -> tuple<u32, u32>;
   }
 
   import input: interface {
@@ -95,6 +146,18 @@ world wasm96 {
     /// Samples are interleaved stereo (L, R, L, R...) signed 16-bit integers.
     /// This should be called once per frame in `update` or `draw`.
     push-samples: func(samples: list<s16>);
+
+    /// Play a WAV file.
+    /// The WAV data is decoded and played as a one-shot audio channel.
+    play-wav: func(data: list<u8>);
+
+    /// Play a QOA file.
+    /// The QOA data is decoded and played as a looping audio channel.
+    play-qoa: func(data: list<u8>);
+
+    /// Play an XM file.
+    /// The XM data is decoded using xmrsplayer and played as a looping audio channel.
+    play-xm: func(data: list<u8>);
   }
 
   import storage: interface {
