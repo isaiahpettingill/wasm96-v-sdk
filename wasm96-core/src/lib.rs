@@ -3,515 +3,63 @@
 //! This crate implements an **Immediate Mode ABI**:
 //! - The host owns the framebuffer and handles rendering.
 //! - The guest issues drawing commands.
-//! - The guest exports `setup`, `update`, and `draw`.
+//! - The guest exports `setup`, and may export `update`/`draw`.
+//! - WASI-style guests are supported: if `draw` is missing, `_start` or `main` may be used.
 //!
 //! The ABI surface is defined in `crate::abi` and mirrored by `wasm96-sdk`.
+//!
+//! Runtime backend: Wasmtime (see `crate::runtime`).
 
 mod abi;
 mod av;
 mod input;
 mod loader;
+mod runtime;
 mod state;
 
-use crate::abi::{GuestEntrypoints, IMPORT_MODULE};
-use crate::state::global;
 use libretro_backend::{Core, CoreInfo, RuntimeHandle, libretro_core};
-use wasmer::{FunctionEnv, FunctionEnvMut, Imports, Store};
+
+use crate::abi::GuestEntrypoints;
 
 /// The libretro core instance.
 pub struct Wasm96Core {
-    store: Store,
-    module: Option<wasmer::Module>,
-    instance: Option<wasmer::Instance>,
+    rt: Option<runtime::WasmtimeRuntime>,
+    module: Option<wasmtime::Module>,
+    instance: Option<wasmtime::Instance>,
     entrypoints: Option<GuestEntrypoints>,
-    env: Option<FunctionEnv<()>>,
     game_data: Option<libretro_backend::GameData>,
 }
 
 impl Default for Wasm96Core {
     fn default() -> Self {
         Self {
-            store: Store::default(),
+            rt: None,
             module: None,
             instance: None,
             entrypoints: None,
-            env: None,
             game_data: None,
         }
     }
 }
 
 impl Wasm96Core {
-    fn build_imports(&mut self) -> Imports {
-        // Wasmer needs an env to pass to host functions that read guest memory views.
-        self.env = Some(FunctionEnv::new(&mut self.store, ()));
-        let env = self.env.as_ref().unwrap().clone();
-
-        // Note: all imports are under module `env` (see abi::IMPORT_MODULE),
-        // because wasm32 targets typically expect `"env"` for imports.
-        wasmer::imports! {
-            IMPORT_MODULE => {
-                // --- Graphics ---
-
-                abi::host_imports::GRAPHICS_SET_SIZE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, width: u32, height: u32| {
-                        av::graphics_set_size(width, height);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_SET_COLOR => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, r: u32, g: u32, b: u32, a: u32| {
-                        av::graphics_set_color(r, g, b, a);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_BACKGROUND => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, r: u32, g: u32, b: u32| {
-                        av::graphics_background(r, g, b);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_POINT => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x: i32, y: i32| {
-                        av::graphics_point(x, y);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_LINE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, x2: i32, y2: i32| {
-                        av::graphics_line(x1, y1, x2, y2);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_RECT => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x: i32, y: i32, w: u32, h: u32| {
-                        av::graphics_rect(x, y, w, h);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_RECT_OUTLINE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x: i32, y: i32, w: u32, h: u32| {
-                        av::graphics_rect_outline(x, y, w, h);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_CIRCLE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x: i32, y: i32, r: u32| {
-                        av::graphics_circle(x, y, r);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_CIRCLE_OUTLINE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x: i32, y: i32, r: u32| {
-                        av::graphics_circle_outline(x, y, r);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_IMAGE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, x: i32, y: i32, w: u32, h: u32, ptr: u32, len: u32| {
-                        let _ = av::graphics_image(&env, x, y, w, h, ptr, len);
-                    }
-                ),
-
-                // --- Keyed resources (SVG/GIF/PNG) ---
-                //
-                // NOTE: These imports accept string keys (ptr,len) so guests don't need numeric ids.
-
-                abi::host_imports::GRAPHICS_SVG_REGISTER => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32| -> u32 {
-                        av::graphics_svg_register(&env, key_ptr, key_len, data_ptr, data_len)
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_SVG_DRAW_KEY => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32| {
-                        av::graphics_svg_draw_key(&env, key_ptr, key_len, x, y, w, h);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_SVG_UNREGISTER => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32| {
-                        av::graphics_svg_unregister(&env, key_ptr, key_len);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_GIF_REGISTER => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32| -> u32 {
-                        av::graphics_gif_register(&env, key_ptr, key_len, data_ptr, data_len)
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_GIF_DRAW_KEY => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, x: i32, y: i32| {
-                        av::graphics_gif_draw_key(&env, key_ptr, key_len, x, y);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_GIF_DRAW_KEY_SCALED => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32| {
-                        av::graphics_gif_draw_key_scaled(&env, key_ptr, key_len, x, y, w, h);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_GIF_UNREGISTER => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32| {
-                        av::graphics_gif_unregister(&env, key_ptr, key_len);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_PNG_REGISTER => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32| -> u32 {
-                        av::graphics_png_register(&env, key_ptr, key_len, data_ptr, data_len)
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_PNG_DRAW_KEY => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, x: i32, y: i32| {
-                        av::graphics_png_draw_key(&env, key_ptr, key_len, x, y);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_PNG_DRAW_KEY_SCALED => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32| {
-                        av::graphics_png_draw_key_scaled(&env, key_ptr, key_len, x, y, w, h);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_PNG_UNREGISTER => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32| {
-                        av::graphics_png_unregister(&env, key_ptr, key_len);
-                    }
-                ),
-
-                // --- Keyed fonts + text ---
-                //
-                // The canonical key for the built-in Spleen font family is "spleen".
-                abi::host_imports::GRAPHICS_FONT_REGISTER_TTF => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32| -> u32 {
-                        av::graphics_font_register_ttf(&env, key_ptr, key_len, data_ptr, data_len)
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_FONT_REGISTER_SPLEEN => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, size: u32| -> u32 {
-                        av::graphics_font_register_spleen(&env, key_ptr, key_len, size)
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_FONT_UNREGISTER => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32| {
-                        av::graphics_font_unregister(&env, key_ptr, key_len);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_TEXT_KEY => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, x: i32, y: i32, font_key_ptr: u32, font_key_len: u32, text_ptr: u32, text_len: u32| {
-                        av::graphics_text_key(x, y, &env, font_key_ptr, font_key_len, text_ptr, text_len);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_TEXT_MEASURE_KEY => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, font_key_ptr: u32, font_key_len: u32, text_ptr: u32, text_len: u32| -> u64 {
-                        av::graphics_text_measure_key(&env, font_key_ptr, font_key_len, text_ptr, text_len)
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_TRIANGLE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32| {
-                        av::graphics_triangle(x1, y1, x2, y2, x3, y3);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_TRIANGLE_OUTLINE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32| {
-                        av::graphics_triangle_outline(x1, y1, x2, y2, x3, y3);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_BEZIER_QUADRATIC => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, cx: i32, cy: i32, x2: i32, y2: i32, segments: u32| {
-                        av::graphics_bezier_quadratic(x1, y1, cx, cy, x2, y2, segments);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_BEZIER_CUBIC => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x1: i32, y1: i32, cx1: i32, cy1: i32, cx2: i32, cy2: i32, x2: i32, y2: i32, segments: u32| {
-                        av::graphics_bezier_cubic(x1, y1, cx1, cy1, cx2, cy2, x2, y2, segments);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_PILL => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x: i32, y: i32, w: u32, h: u32| {
-                        av::graphics_pill(x, y, w, h);
-                    }
-                ),
-
-                abi::host_imports::GRAPHICS_PILL_OUTLINE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, x: i32, y: i32, w: u32, h: u32| {
-                        av::graphics_pill_outline(x, y, w, h);
-                    }
-                ),
-
-                // NOTE: legacy ID-based SVG/GIF/font imports removed in favor of keyed resources.
-                //
-                // Keyed resources (to be wired):
-                // - SVG: register/draw_key/unregister
-                // - GIF: register/draw_key/draw_key_scaled/unregister
-                // - PNG: register/draw_key/draw_key_scaled/unregister
-                // - Fonts: register_ttf/register_spleen/unregister + text_key/text_measure_key
-
-                // --- Audio ---
-
-                abi::host_imports::AUDIO_INIT => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, sample_rate: u32| -> u32 {
-                        av::audio_init(sample_rate)
-                    }
-                ),
-
-                abi::host_imports::AUDIO_PUSH_SAMPLES => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
-                        let _ = av::audio_push_samples(&env, ptr, len);
-                    }
-                ),
-
-                abi::host_imports::AUDIO_PLAY_WAV => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
-                        let _ = av::audio_play_wav(&env, ptr, len);
-                    }
-                ),
-
-                abi::host_imports::AUDIO_PLAY_QOA => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
-                        let _ = av::audio_play_qoa(&env, ptr, len);
-                    }
-                ),
-
-                abi::host_imports::AUDIO_PLAY_XM => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
-                        let _ = av::audio_play_xm(&env, ptr, len);
-                    }
-                ),
-
-                // --- Input ---
-
-                abi::host_imports::INPUT_IS_BUTTON_DOWN => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, port: u32, btn: u32| -> u32 {
-                        input::joypad_button_pressed(port, btn)
-                    }
-                ),
-
-                abi::host_imports::INPUT_IS_KEY_DOWN => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, key: u32| -> u32 {
-                        input::key_pressed(key)
-                    }
-                ),
-
-                abi::host_imports::INPUT_GET_MOUSE_X => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>| -> i32 { input::mouse_x() }
-                ),
-
-                abi::host_imports::INPUT_GET_MOUSE_Y => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>| -> i32 { input::mouse_y() }
-                ),
-
-                abi::host_imports::INPUT_IS_MOUSE_DOWN => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>, btn: u32| -> u32 {
-                        let mask = input::mouse_buttons();
-                        let requested = 1u32 << btn;
-                        if (mask & requested) != 0 { 1 } else { 0 }
-                    }
-                ),
-
-                // --- System ---
-
-                abi::host_imports::SYSTEM_LOG => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
-                        // Best-effort: read UTF-8 from guest memory and log to stdout.
-                        //
-                        // If memory isn't available or the guest passes garbage, we ignore.
-                        let memory_ptr = {
-                            let s = global().lock().unwrap();
-                            s.memory
-                        };
-                        if memory_ptr.is_null() {
-                            return;
-                        }
-
-                        let mem = unsafe { &*memory_ptr };
-                        let view = mem.view(&env);
-
-                        let mut buf = vec![0u8; len as usize];
-                        if view.read(ptr as u64, &mut buf).is_ok() {
-                            if let Ok(msg) = core::str::from_utf8(&buf) {
-                                println!("[wasm96] {msg}");
-                            }
-                        }
-                    }
-                ),
-
-                abi::host_imports::SYSTEM_MILLIS => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |_env: FunctionEnvMut<()>| -> u64 {
-                        // Host time in milliseconds (monotonic-ish).
-                        //
-                        // This uses libretro's monotonic time if available elsewhere in the future,
-                        // but for now use std time since UNIX epoch.
-                        use std::time::{SystemTime, UNIX_EPOCH};
-                        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-                        now.as_millis() as u64
-                    }
-                ),
-
-                // --- Storage ---
-
-                abi::host_imports::STORAGE_SAVE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32| {
-                        av::storage_save(&env, key_ptr, key_len, data_ptr, data_len);
-                    }
-                ),
-
-                abi::host_imports::STORAGE_LOAD => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, key_ptr: u32, key_len: u32| -> u64 {
-                        av::storage_load(&env, key_ptr, key_len)
-                    }
-                ),
-
-                abi::host_imports::STORAGE_FREE => wasmer::Function::new_typed_with_env(
-                    &mut self.store,
-                    &env,
-                    |env: FunctionEnvMut<()>, ptr: u32, len: u32| {
-                        av::storage_free(&env, ptr, len);
-                    }
-                ),
-
-                // --- New graphics APIs (stubs for now; wired up in av/graphics extensions) ---
-                // These are added so guest WASM modules can link, even before the renderer is finalized.
-                //
-                // NOTE: The actual ABI constants must exist in `abi::host_imports` for these to be reachable.
-
-                // abi::host_imports::GRAPHICS_TRIANGLE => wasmer::Function::new_typed_with_env(
-                //     &mut self.store,
-                //     &env,
-                //     |_env: FunctionEnvMut<()>, _x1: i32, _y1: i32, _x2: i32, _y2: i32, _x3: i32, _y3: i32| {
-                //         // TODO: av::graphics_triangle_filled(...)
-                //     }
-                // ),
-            }
+    fn ensure_runtime(&mut self) -> Result<(), ()> {
+        if self.rt.is_some() {
+            return Ok(());
         }
+
+        let mut rt = runtime::WasmtimeRuntime::new().map_err(|_| ())?;
+        rt.define_imports().map_err(|_| ())?;
+        self.rt = Some(rt);
+        Ok(())
     }
 
     fn instantiate(&mut self) -> Result<(), ()> {
-        // Take ownership of the module temporarily to avoid holding an immutable borrow
-        // across `self.build_imports()` (which needs `&mut self`).
-        let module = self.module.take().ok_or(())?;
+        self.ensure_runtime()?;
+        let rt = self.rt.as_mut().ok_or(())?;
+        let module = self.module.as_ref().ok_or(())?;
 
-        // Install imports and instantiate.
-        let imports = self.build_imports();
-        let instance = wasmer::Instance::new(&mut self.store, &module, &imports).map_err(|_| ())?;
-
-        // Put the module back now that instantiation succeeded.
-        self.module = Some(module);
-
-        // Validate required exports + resolve entrypoints.
-        abi::validate::required_exports_present(&instance).map_err(|_| ())?;
-        let entrypoints = GuestEntrypoints::resolve(&instance).map_err(|_| ())?;
-
-        // Register exported memory in global state.
-        let mem = instance.exports.get_memory("memory").map_err(|_| ())?;
-        state::set_guest_memory(mem);
-
-        // Store instance/entrypoints.
+        let (instance, entrypoints) = rt.instantiate(module).map_err(|_| ())?;
         self.instance = Some(instance);
         self.entrypoints = Some(entrypoints);
 
@@ -519,24 +67,43 @@ impl Wasm96Core {
     }
 
     fn call_guest_setup(&mut self) {
+        let Some(rt) = self.rt.as_mut() else { return };
         let Some(entry) = &self.entrypoints else {
             return;
         };
-        let _ = entry.setup.call(&mut self.store, &[]);
+
+        // Wasmtime's `Func::call` requires an output buffer even if there are no returns.
+        let mut results: [wasmtime::Val; 0] = [];
+        let _ = entry.setup.call(&mut rt.store, &[], &mut results);
     }
 
     fn call_guest_update(&mut self) {
+        let Some(rt) = self.rt.as_mut() else { return };
         let Some(entry) = &self.entrypoints else {
             return;
         };
-        let _ = entry.update.call(&mut self.store, &[]);
+        let Some(update) = &entry.update else { return };
+
+        let mut results: [wasmtime::Val; 0] = [];
+        let _ = update.call(&mut rt.store, &[], &mut results);
     }
 
     fn call_guest_draw(&mut self) {
+        let Some(rt) = self.rt.as_mut() else { return };
         let Some(entry) = &self.entrypoints else {
             return;
         };
-        let _ = entry.draw.call(&mut self.store, &[]);
+        let Some(draw) = &entry.draw else { return };
+
+        let mut results: [wasmtime::Val; 0] = [];
+        let _ = draw.call(&mut rt.store, &[], &mut results);
+    }
+
+    fn clear_guest(&mut self) {
+        self.module = None;
+        self.instance = None;
+        self.entrypoints = None;
+        // Keep `rt` allocated so subsequent loads are faster; it’s safe because imports are pure host fns.
     }
 }
 
@@ -566,15 +133,25 @@ impl Core for Wasm96Core {
     ) -> libretro_backend::LoadGameResult {
         self.game_data = Some(game_data);
 
-        let data = match self.game_data.as_ref().unwrap().data() {
-            Some(d) => d,
+        // Ensure runtime exists so we have an Engine to compile against.
+        if self.ensure_runtime().is_err() {
+            state::clear_on_unload();
+            return libretro_backend::LoadGameResult::Failed(self.game_data.take().unwrap());
+        }
+
+        // Copy game bytes out of `GameData` so we don't hold an immutable borrow of `self.game_data`
+        // across calls that mutably borrow `self` (and so the slice doesn't outlive any temporary borrow).
+        let data: Vec<u8> = match self.game_data.as_ref().and_then(|g| g.data()) {
+            Some(d) => d.to_vec(),
             None => {
                 return libretro_backend::LoadGameResult::Failed(self.game_data.take().unwrap());
             }
         };
 
-        // Compile module (WASM or WAT).
-        let module = match loader::compile_module(&self.store, data) {
+        let rt = self.rt.as_ref().unwrap();
+
+        // Compile module (WASM or WAT) using Wasmtime Engine.
+        let module = match loader::compile_module(&rt.engine, &data) {
             Ok(m) => m,
             Err(_) => {
                 return libretro_backend::LoadGameResult::Failed(self.game_data.take().unwrap());
@@ -586,10 +163,7 @@ impl Core for Wasm96Core {
         // Instantiate module + resolve entrypoints/memory.
         if self.instantiate().is_err() {
             state::clear_on_unload();
-            self.module = None;
-            self.instance = None;
-            self.entrypoints = None;
-            self.env = None;
+            self.clear_guest();
             return libretro_backend::LoadGameResult::Failed(self.game_data.take().unwrap());
         }
 
@@ -597,7 +171,6 @@ impl Core for Wasm96Core {
         self.call_guest_setup();
 
         // Return default AV info.
-        // We set 60 FPS and 44100 Hz audio as a baseline.
         let av_info = libretro_backend::AudioVideoInfo::new()
             .video(320, 240, 60.0, libretro_backend::PixelFormat::ARGB8888)
             .audio(44100.0)
@@ -607,13 +180,8 @@ impl Core for Wasm96Core {
     }
 
     fn on_unload_game(&mut self) -> libretro_backend::GameData {
-        self.module = None;
-        self.instance = None;
-        self.entrypoints = None;
-        self.env = None;
-
+        self.clear_guest();
         state::clear_on_unload();
-
         self.game_data.take().unwrap()
     }
 
@@ -636,8 +204,6 @@ impl Core for Wasm96Core {
     }
 
     fn on_reset(&mut self) {
-        // Re-run setup on reset? Or add a reset export?
-        // For now, let's just re-run setup.
         self.call_guest_setup();
     }
 }

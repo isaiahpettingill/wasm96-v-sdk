@@ -1,7 +1,7 @@
 //! Core-side shared state.
 //!
 //! This module owns the host-side state that bridges libretro callbacks and the
-//! Wasmer host functions.
+//! WASM runtime host functions.
 //!
 //! ABI model (Immediate Mode):
 //! - Host owns the framebuffer and handles all rendering commands.
@@ -11,7 +11,8 @@
 use libretro_backend::RuntimeHandle;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use wasmer::Memory;
+
+use wasmtime::Memory as WasmtimeMemory;
 
 /// A single host-side “audio channel” (a.k.a. a mixing voice).
 ///
@@ -65,14 +66,17 @@ impl Default for AudioChannel {
 
 /// Global core state accessed from:
 /// - `Core::on_run` (to set the current `RuntimeHandle`)
-/// - Wasmer host import functions
+/// - host import functions
 #[derive(Default)]
 pub struct GlobalState {
     /// Current libretro runtime handle.
     pub handle: *mut RuntimeHandle,
 
-    /// Guest linear memory export (`memory`).
-    pub memory: *mut Memory,
+    /// Guest linear memory export (`memory`) for the Wasmtime runtime.
+    ///
+    /// Stored as a raw pointer because the rest of the codebase accesses global state
+    /// through a mutex-protected singleton and expects a stable address once set.
+    pub memory_wasmtime: *const WasmtimeMemory,
 
     /// Host-owned video state (system memory).
     pub video: VideoState,
@@ -188,15 +192,22 @@ pub fn set_runtime_handle(handle: &mut RuntimeHandle) {
     s.handle = handle as *mut _;
 }
 
-pub fn set_guest_memory(memory: &Memory) {
+/// Set the guest memory for the Wasmtime runtime.
+pub fn set_guest_memory_wasmtime(memory: &WasmtimeMemory) {
     let mut s = global().lock().unwrap();
-    s.memory = memory as *const _ as *mut _;
+    s.memory_wasmtime = memory as *const _;
 }
 
 pub fn clear_on_unload() {
-    let mut s = global().lock().unwrap();
+    // If a previous panic occurred while holding the global lock, the mutex will be poisoned.
+    // We still want to reset state in that case so other tests/frames can proceed.
+    let mut s = match global().lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
     s.handle = std::ptr::null_mut();
-    s.memory = std::ptr::null_mut();
+    s.memory_wasmtime = std::ptr::null();
 
     s.video = VideoState::default();
     s.audio = AudioState::default();

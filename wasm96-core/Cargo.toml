@@ -11,8 +11,14 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 libretro-backend = { workspace = true }
 libretro-sys = "0.1.1"
-wasmer = { workspace = true }
 
+# Runtime: Wasmtime (broader feature support + WASI integration)
+# Enable a broad set of Wasmtime crate feature flags to support more module types.
+wasmtime = { version = "39.0.1", features = ["cranelift", "pooling-allocator", "profiling"] }
+wasmtime-wasi = { version = "39.0.1" }
+
+# Error handling
+anyhow = "1.0.99"
 
 # Rendering / assets
 fontdue = "0.9.3"
@@ -21,7 +27,7 @@ png = "0.17.16"
 resvg = { version = "0.44.0", default-features = false, features = ["text"] }
 lazy_static = "1.4"
 
-# Used to parse `.wat` text into `.wasm` bytes before passing to Wasmer.
+# Used to parse `.wat` text into `.wasm` bytes before passing to the runtime.
 wat = "1.243.0"
 hound = "3.5.1"
 qoaudio = "0.1.0"

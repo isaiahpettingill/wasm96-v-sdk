@@ -5,9 +5,20 @@ edition = "2024"
 license = "MIT"
 publish = false
 
+# Prevent this example crate from being built/tested as part of native (host) workspace builds.
+# It's intended to be compiled for `wasm32-unknown-unknown` and loaded by `wasm96-core`.
+autoexamples = false
+autobins = false
+autotests = false
+autobenches = false
+
 [lib]
 # Guest is a WASM module loaded by wasm96-core, so build as a cdylib.
 crate-type = ["cdylib"]
+# Do not build this crate's tests/bench/doctests by default on the host.
+test = false
+doctest = false
+bench = false
 
 [dependencies]
 # Depend on the workspace SDK crate via relative path.

@@ -3,14 +3,14 @@
 //! Responsibilities:
 //! - Detect whether the provided ROM bytes are a `.wasm` binary or `.wat` text.
 //! - If it looks like WAT, convert it to WASM bytes (via the `wat` crate).
-//! - Compile a Wasmer `Module` from the resulting WASM bytes.
+//! - Compile a Wasmtime `Module` from the resulting WASM bytes.
 //!
 //! Notes:
 //! - libretro provides the ROM bytes; extension sniffing is unreliable in some setups,
 //!   so we sniff the bytes themselves.
 //! - We accept leading whitespace/comments for WAT as best-effort.
 
-use wasmer::{Module, Store};
+use wasmtime::{Engine, Module};
 
 /// Error returned by loader helpers.
 #[derive(Debug)]
@@ -19,8 +19,8 @@ pub enum LoadError {
     UnrecognizedFormat,
     /// WAT parsing failed.
     WatParseFailed(wat::Error),
-    /// Wasmer module compilation failed.
-    CompileFailed(wasmer::CompileError),
+    /// Wasmtime module compilation failed.
+    CompileFailed(anyhow::Error),
 }
 
 impl core::fmt::Display for LoadError {
@@ -45,10 +45,10 @@ pub enum DetectedFormat {
 }
 
 /// Load: detect -> (optional) wat->wasm -> compile.
-pub fn compile_module(store: &Store, rom_bytes: &[u8]) -> Result<Module, LoadError> {
+pub fn compile_module(engine: &Engine, rom_bytes: &[u8]) -> Result<Module, LoadError> {
     let Detected { format, wasm_bytes } = normalize_to_wasm(rom_bytes)?;
     let _ = format; // reserved for future logging/telemetry
-    Module::new(store, wasm_bytes.as_slice()).map_err(LoadError::CompileFailed)
+    Module::new(engine, wasm_bytes.as_slice()).map_err(LoadError::CompileFailed)
 }
 
 /// Detect format and normalize to valid WASM bytes.
@@ -125,6 +125,7 @@ fn skip_bom_and_leading_ws(bytes: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasmtime::Config;
 
     #[test]
     fn detects_wasm_magic() {
@@ -150,5 +151,26 @@ mod tests {
     #[test]
     fn unrecognized_returns_none() {
         assert_eq!(detect_format(b"not wasm"), None);
+    }
+
+    #[test]
+    fn compile_module_accepts_wat_and_wasm() {
+        // Keep this small and ensure both WAT and WASM compile on a default engine.
+        let mut cfg = Config::new();
+        cfg.wasm_multi_value(true);
+        cfg.wasm_bulk_memory(true);
+        cfg.wasm_reference_types(true);
+        cfg.wasm_simd(true);
+        // Threads/atomics require shared memory setup + host support; don't force-enable here.
+
+        let engine = Engine::new(&cfg).unwrap();
+
+        let wat = br#"(module (func (export "setup")))"#;
+        let m1 = compile_module(&engine, wat).unwrap();
+        assert!(m1.exports().len() >= 1);
+
+        let wasm = wat::parse_bytes(wat).unwrap();
+        let m2 = compile_module(&engine, wasm.as_ref()).unwrap();
+        assert!(m2.exports().len() >= 1);
     }
 }

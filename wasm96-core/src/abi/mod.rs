@@ -73,13 +73,30 @@
 //! - `wasm96_system_log(ptr: u32, len: u32)`
 //! - `wasm96_system_millis() -> u64`
 //!
-//! ## Exports (host -> guest) required
+//! ## Exports (host -> guest)
+//!
 //! The guest module **must** export:
 //! - `setup()`
+//!
+//! The guest module **may** export:
 //! - `update()`
 //! - `draw()`
+//!
+//! WASI-style modules are also supported:
+//! - If `draw()` is missing, `_start()` or `main()` will be treated as the draw function (in that order).
+//! - `update()` is optional; if missing, update is treated as a no-op.
+//!
+//! Precedence:
+//! - If `draw()` is exported, it takes precedence over `_start()`/`main()`.
+//! - If `update()` is exported, it takes precedence over any default behavior.
+//!
+//! This module intentionally avoids embedding a specific runtime (Wasmer/Wasmtime) in its public API.
+//! Runtime-specific helpers should be implemented in runtime glue modules.
+//!
+//! This module intentionally avoids embedding a specific runtime (Wasmer/Wasmtime) in its public API.
+//! Runtime-specific helpers should be implemented in runtime glue modules.
 
-use wasmer::Function;
+use wasmtime::{Instance, Store};
 
 /// Wasmer import module name used by the guest.
 pub const IMPORT_MODULE: &str = "env";
@@ -92,6 +109,11 @@ pub mod guest_exports {
     pub const UPDATE: &str = "update";
     /// Called once per frame to draw.
     pub const DRAW: &str = "draw";
+
+    /// WASI entrypoint (common for wasi modules).
+    pub const WASI_START: &str = "_start";
+    /// Conventional "main" export (non-standard in Wasm, but common in toolchains).
+    pub const MAIN: &str = "main";
 }
 
 /// Host import names provided to the guest.
@@ -194,21 +216,19 @@ pub enum Button {
 /// Helpers for validating guest exports.
 pub mod validate {
     use super::guest_exports;
-    use wasmer::Instance;
+    use wasmtime::{Instance, Store};
 
-    pub fn required_exports_present(instance: &Instance) -> Result<(), MissingExport> {
-        if instance.exports.get_function(guest_exports::SETUP).is_err() {
+    /// Validate that the required guest exports exist (Wasmtime).
+    ///
+    /// Only `setup` is required. `update` and `draw` are optional because:
+    /// - guests may choose to export only `draw` or only `update`
+    /// - WASI-style guests may export `_start` or `main` instead of `draw`
+    pub fn required_exports_present_wasmtime(
+        instance: &Instance,
+        store: &mut Store<()>,
+    ) -> Result<(), MissingExport> {
+        if instance.get_func(store, guest_exports::SETUP).is_none() {
             return Err(MissingExport::Setup);
-        }
-        if instance
-            .exports
-            .get_function(guest_exports::UPDATE)
-            .is_err()
-        {
-            return Err(MissingExport::Update);
-        }
-        if instance.exports.get_function(guest_exports::DRAW).is_err() {
-            return Err(MissingExport::Draw);
         }
         Ok(())
     }
@@ -216,33 +236,154 @@ pub mod validate {
     #[derive(Debug)]
     pub enum MissingExport {
         Setup,
-        Update,
-        Draw,
     }
 }
 
-/// A small view of a guest's entrypoints as `wasmer::Function`s.
+/// A small view of a guest's entrypoints as Wasmtime `Func`s.
+///
+/// NOTE: `update` and `draw` are optional. The host should treat missing ones as no-ops.
+/// `draw` may be satisfied by WASI-style `_start` or by `main` when `draw` is absent.
 #[derive(Clone)]
 pub struct GuestEntrypoints {
-    pub setup: Function,
-    pub update: Function,
-    pub draw: Function,
+    pub setup: wasmtime::Func,
+    pub update: Option<wasmtime::Func>,
+    pub draw: Option<wasmtime::Func>,
 }
 
 impl GuestEntrypoints {
-    /// Resolve entrypoint exports from an instance.
-    pub fn resolve(instance: &wasmer::Instance) -> Result<Self, wasmer::ExportError> {
-        let setup = instance.exports.get_function(guest_exports::SETUP)?.clone();
-        let update = instance
-            .exports
-            .get_function(guest_exports::UPDATE)?
-            .clone();
-        let draw = instance.exports.get_function(guest_exports::DRAW)?.clone();
+    /// Resolve entrypoint exports from a Wasmtime instance with WASI-friendly fallbacks.
+    ///
+    /// Rules:
+    /// - `setup` is required.
+    /// - `draw` is preferred if exported; otherwise `_start`, otherwise `main`.
+    /// - `update` is used if exported; otherwise it's `None`.
+    pub fn resolve_wasmtime(
+        instance: &Instance,
+        store: &mut Store<()>,
+    ) -> Result<Self, anyhow::Error> {
+        // Wasmtime APIs take `impl AsContextMut`, and passing `store` directly into multiple
+        // calls can lead to "use of moved value" errors due to how the reborrow is inferred.
+        // Use explicit reborrows for each call.
+        let setup = instance
+            .get_func(&mut *store, guest_exports::SETUP)
+            .ok_or_else(|| anyhow::anyhow!("missing required export: {}", guest_exports::SETUP))?;
+        let update = instance.get_func(&mut *store, guest_exports::UPDATE);
+        let draw = instance
+            .get_func(&mut *store, guest_exports::DRAW)
+            .or_else(|| instance.get_func(&mut *store, guest_exports::WASI_START))
+            .or_else(|| instance.get_func(&mut *store, guest_exports::MAIN));
 
         Ok(Self {
             setup,
             update,
             draw,
         })
+    }
+}
+
+#[cfg(test)]
+mod entrypoint_tests {
+    use super::*;
+    use wasmtime::{Engine, Module, Store};
+
+    fn instantiate(wat_src: &str) -> (Store<()>, Instance) {
+        let engine = Engine::default();
+        let mut store = Store::new(&engine, ());
+        let wasm = wat::parse_str(wat_src).unwrap();
+        let module = Module::new(&engine, wasm).unwrap();
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        (store, instance)
+    }
+
+    #[test]
+    fn requires_setup_export() {
+        let (mut store, instance) = instantiate(
+            r#"
+            (module
+              (func (export "draw"))
+            )
+            "#,
+        );
+
+        assert!(validate::required_exports_present_wasmtime(&instance, &mut store).is_err());
+    }
+
+    #[test]
+    fn prefers_draw_over_wasi_start_and_main() {
+        let (mut store, instance) = instantiate(
+            r#"
+            (module
+              (func (export "setup"))
+              (func (export "draw"))
+              (func (export "_start"))
+              (func (export "main"))
+            )
+            "#,
+        );
+
+        let ep = GuestEntrypoints::resolve_wasmtime(&instance, &mut store).unwrap();
+        assert!(ep.draw.is_some());
+    }
+
+    #[test]
+    fn falls_back_to_wasi_start_when_draw_missing() {
+        let (mut store, instance) = instantiate(
+            r#"
+            (module
+              (func (export "setup"))
+              (func (export "_start"))
+              (func (export "main"))
+            )
+            "#,
+        );
+
+        let ep = GuestEntrypoints::resolve_wasmtime(&instance, &mut store).unwrap();
+        assert!(ep.draw.is_some());
+    }
+
+    #[test]
+    fn falls_back_to_main_when_draw_and_wasi_start_missing() {
+        let (mut store, instance) = instantiate(
+            r#"
+            (module
+              (func (export "setup"))
+              (func (export "main"))
+            )
+            "#,
+        );
+
+        let ep = GuestEntrypoints::resolve_wasmtime(&instance, &mut store).unwrap();
+        assert!(ep.draw.is_some());
+    }
+
+    #[test]
+    fn update_is_none_when_missing() {
+        let (mut store, instance) = instantiate(
+            r#"
+            (module
+              (func (export "setup"))
+              (func (export "draw"))
+            )
+            "#,
+        );
+
+        let ep = GuestEntrypoints::resolve_wasmtime(&instance, &mut store).unwrap();
+        assert!(ep.update.is_none());
+    }
+
+    #[test]
+    fn update_prefers_export_when_present() {
+        let (mut store, instance) = instantiate(
+            r#"
+            (module
+              (func (export "setup"))
+              (func (export "draw"))
+              (func (export "update"))
+            )
+            "#,
+        );
+
+        let ep = GuestEntrypoints::resolve_wasmtime(&instance, &mut store).unwrap();
+        assert!(ep.update.is_some());
     }
 }

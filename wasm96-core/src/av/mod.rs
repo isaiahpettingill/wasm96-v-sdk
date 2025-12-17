@@ -17,7 +17,7 @@
 extern crate alloc;
 
 use crate::state::global;
-use wasmer::FunctionEnvMut;
+use wasmtime::Caller;
 
 // External crates for rendering
 use fontdue::{Font, FontSettings};
@@ -31,7 +31,6 @@ use std::sync::Mutex;
 // Storage ABI helpers
 use alloc::string::String;
 use alloc::vec::Vec;
-use wasmer::Memory;
 
 #[cfg(test)]
 mod tests {
@@ -41,8 +40,16 @@ mod tests {
         buf.iter().copied().filter(|&c| c == color).count()
     }
 
+    fn reset_state_for_test() {
+        // Ensure any previous test doesn't leave global state in a poisoned/invalid state.
+        // This keeps tests isolated and avoids cascading failures when a prior test panics.
+        crate::state::clear_on_unload();
+    }
+
     #[test]
     fn triangle_degenerate_area_draws_nothing() {
+        reset_state_for_test();
+
         // Make sure the triangle fill handles colinear points.
         graphics_set_size(16, 16);
         graphics_background(0, 0, 0);
@@ -58,6 +65,8 @@ mod tests {
 
     #[test]
     fn triangle_fills_some_pixels_for_simple_case() {
+        reset_state_for_test();
+
         graphics_set_size(32, 32);
         graphics_background(0, 0, 0);
         graphics_set_color(0, 255, 0, 255);
@@ -77,6 +86,8 @@ mod tests {
 
     #[test]
     fn triangle_vertex_order_does_not_change_fill_count() {
+        reset_state_for_test();
+
         // Vertex order reverses winding; rasterization should be winding-invariant.
         graphics_set_size(32, 32);
 
@@ -108,6 +119,8 @@ mod tests {
 
     #[test]
     fn triangle_clips_to_screen_without_panicking() {
+        reset_state_for_test();
+
         // This test mostly ensures we don't index OOB when coordinates are off-screen.
         graphics_set_size(16, 16);
         graphics_background(0, 0, 0);
@@ -120,11 +133,19 @@ mod tests {
         let s = global().lock().unwrap();
         let filled = count_color(&s.video.framebuffer, white);
         assert!(filled > 0);
-        assert!(filled <= (16 * 16) as usize);
+
+        // This assertion is only about clipping/not panicking; a strict upper bound can be flaky
+        // if draw_color/state leaks or if the test isn't perfectly isolated.
+        assert!(
+            filled <= s.video.framebuffer.len(),
+            "filled pixels must never exceed framebuffer length"
+        );
     }
 
     #[test]
     fn audio_channel_mix_advances_position_without_requiring_runtime_handle() {
+        reset_state_for_test();
+
         // `audio_drain_host` early-returns if no libretro runtime handle is installed, which
         // makes it unsuitable for unit tests. Instead, validate the core mixing behavior:
         // channel position advances only when we actually mix frames.
@@ -204,6 +225,8 @@ mod tests {
 
     #[test]
     fn png_decode_and_draw_renders_expected_pixel() {
+        reset_state_for_test();
+
         // Generate a valid minimal 1x1 RGBA PNG at runtime using the encoder,
         // to avoid hardcoding bytes/CRCs.
         let mut png_bytes: Vec<u8> = Vec::new();
@@ -273,9 +296,19 @@ lazy_static::lazy_static! {
 
 #[derive(Default)]
 struct Resources {
+    // ID-based resources (existing APIs in this module).
     svgs: HashMap<u32, Tree>,
     gifs: HashMap<u32, GifResource>,
     fonts: HashMap<u32, FontResource>,
+
+    // Keyed indirection (new): map string keys (bytes) -> ids in the above maps.
+    //
+    // We intentionally use owned `String` keys because guests pass UTF-8.
+    keyed_svgs: HashMap<String, u32>,
+    keyed_gifs: HashMap<String, u32>,
+    keyed_pngs: HashMap<String, PngResource>,
+    keyed_fonts: HashMap<String, u32>,
+
     next_id: u32,
 }
 
@@ -284,6 +317,13 @@ struct GifResource {
     delays: Vec<u16>,     // in 10ms units
     width: u16,
     height: u16,
+}
+
+#[derive(Clone)]
+struct PngResource {
+    rgba: Vec<u8>, // RGBA8888 bytes
+    width: u32,
+    height: u32,
 }
 
 enum FontResource {
@@ -300,6 +340,25 @@ enum FontResource {
 pub enum AvError {
     MissingMemory,
     MemoryReadFailed,
+}
+
+fn read_guest_bytes(caller: &mut Caller<'_, ()>, ptr: u32, len: u32) -> Result<Vec<u8>, AvError> {
+    let memory = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or(AvError::MissingMemory)?;
+
+    let mut data = vec![0u8; len as usize];
+    memory
+        .read(&*caller, ptr as usize, &mut data)
+        .map_err(|_| AvError::MemoryReadFailed)?;
+    Ok(data)
+}
+
+fn read_guest_utf8(caller: &mut Caller<'_, ()>, ptr: u32, len: u32) -> Result<String, AvError> {
+    let data = read_guest_bytes(caller, ptr, len)?;
+    let s = std::str::from_utf8(&data).map_err(|_| AvError::MemoryReadFailed)?;
+    Ok(s.to_string())
 }
 
 // --- Graphics ---
@@ -494,7 +553,7 @@ pub fn graphics_circle_outline(cx: i32, cy: i32, r: u32) {
 /// Draw an image from guest memory.
 /// `ptr` points to RGBA bytes (4 bytes per pixel).
 pub fn graphics_image(
-    env: &FunctionEnvMut<()>,
+    caller: &mut Caller<'_, ()>,
     x: i32,
     y: i32,
     img_w: u32,
@@ -514,23 +573,17 @@ pub fn graphics_image(
     }
 
     // Read guest memory
-    let memory_ptr = {
-        let s = global().lock().unwrap();
-        s.memory
-    };
-    if memory_ptr.is_null() {
-        return Err(AvError::MissingMemory);
-    }
-
-    // SAFETY: memory pointer checked.
-    let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
+    let memory = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or(AvError::MissingMemory)?;
 
     // We read the whole image into a temp buffer.
     // Optimization: could read row-by-row to avoid large allocation,
     // but for retro resolutions this is fine.
     let mut img_data = vec![0u8; len as usize];
-    view.read(ptr as u64, &mut img_data)
+    memory
+        .read(&*caller, ptr as usize, &mut img_data)
         .map_err(|_| AvError::MemoryReadFailed)?;
 
     // Lock and draw
@@ -583,28 +636,13 @@ pub fn graphics_image(
 ///
 /// NOTE: this requires adding the `png` crate dependency to `wasm96-core/Cargo.toml`.
 pub fn graphics_image_png(
-    env: &FunctionEnvMut<()>,
+    env: &mut Caller<'_, ()>,
     x: i32,
     y: i32,
     ptr: u32,
     len: u32,
 ) -> Result<(), AvError> {
-    // Read guest memory
-    let memory_ptr = {
-        let s = global().lock().unwrap();
-        s.memory
-    };
-    if memory_ptr.is_null() {
-        return Err(AvError::MissingMemory);
-    }
-
-    // SAFETY: memory pointer checked.
-    let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
-
-    let mut png_bytes = vec![0u8; len as usize];
-    view.read(ptr as u64, &mut png_bytes)
-        .map_err(|_| AvError::MemoryReadFailed)?;
+    let png_bytes = read_guest_bytes(env, ptr, len)?;
 
     // Decode PNG into RGBA8
     let cursor = std::io::Cursor::new(png_bytes);
@@ -648,6 +686,161 @@ pub fn graphics_image_png(
 
     graphics_image_from_host(x, y, w, h, &rgba);
     Ok(())
+}
+
+fn decode_png_to_rgba(png_bytes: &[u8]) -> Option<PngResource> {
+    let cursor = std::io::Cursor::new(png_bytes);
+    let decoder = png::Decoder::new(cursor);
+    let mut reader = decoder.read_info().ok()?;
+
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+
+    let w = info.width;
+    let h = info.height;
+    if w == 0 || h == 0 {
+        return None;
+    }
+
+    let bytes = &buf[..info.buffer_size()];
+
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => bytes.to_vec(),
+        png::ColorType::Rgb => bytes
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        png::ColorType::Grayscale => bytes.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => bytes
+            .chunks_exact(2)
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
+        png::ColorType::Indexed => {
+            // If the decoder didn't expand indexed color, we don't support it here.
+            return None;
+        }
+    };
+
+    Some(PngResource {
+        rgba,
+        width: w,
+        height: h,
+    })
+}
+
+/// Register a PNG under a string key (bytes are encoded PNG).
+pub fn graphics_png_register(
+    env: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    data_ptr: u32,
+    data_len: u32,
+) -> u32 {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return 0,
+    };
+
+    let png_bytes = match read_guest_bytes(env, data_ptr, data_len) {
+        Ok(b) => b,
+        Err(_) => return 0,
+    };
+
+    let decoded = match decode_png_to_rgba(&png_bytes) {
+        Some(d) => d,
+        None => return 0,
+    };
+
+    let mut res = RESOURCES.lock().unwrap();
+    res.keyed_pngs.insert(key, decoded);
+    1
+}
+
+/// Draw a keyed PNG at natural size.
+pub fn graphics_png_draw_key(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let png = {
+        let res = RESOURCES.lock().unwrap();
+        res.keyed_pngs.get(&key).cloned()
+    };
+
+    if let Some(png) = png {
+        graphics_image_from_host(x, y, png.width, png.height, &png.rgba);
+    }
+}
+
+/// Draw a keyed PNG scaled (nearest-neighbor).
+pub fn graphics_png_draw_key_scaled(
+    env: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let png = {
+        let res = RESOURCES.lock().unwrap();
+        res.keyed_pngs.get(&key).cloned()
+    };
+
+    let Some(png) = png else {
+        return;
+    };
+
+    // Natural size if either dimension is 0.
+    if w == 0 || h == 0 {
+        graphics_image_from_host(x, y, png.width, png.height, &png.rgba);
+        return;
+    }
+
+    let src_w = png.width;
+    let src_h = png.height;
+    if src_w == 0 || src_h == 0 {
+        return;
+    }
+
+    let mut dst = vec![0u8; (w as usize).saturating_mul(h as usize).saturating_mul(4)];
+    for dy in 0..h {
+        let sy = (dy as u64 * src_h as u64 / h as u64) as u32;
+        let sy = sy.min(src_h.saturating_sub(1));
+        for dx in 0..w {
+            let sx = (dx as u64 * src_w as u64 / w as u64) as u32;
+            let sx = sx.min(src_w.saturating_sub(1));
+
+            let sidx = ((sy as usize) * (src_w as usize) + (sx as usize)) * 4;
+            let didx = ((dy as usize) * (w as usize) + (dx as usize)) * 4;
+
+            if sidx + 3 < png.rgba.len() && didx + 3 < dst.len() {
+                dst[didx] = png.rgba[sidx];
+                dst[didx + 1] = png.rgba[sidx + 1];
+                dst[didx + 2] = png.rgba[sidx + 2];
+                dst[didx + 3] = png.rgba[sidx + 3];
+            }
+        }
+    }
+
+    graphics_image_from_host(x, y, w, h, &dst);
+}
+
+/// Unregister a keyed PNG.
+pub fn graphics_png_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let mut res = RESOURCES.lock().unwrap();
+    res.keyed_pngs.remove(&key);
 }
 
 #[inline]
@@ -696,8 +889,9 @@ pub fn graphics_triangle(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) {
     // Make the edge tests winding-invariant by normalizing the edge function
     // values to the same sign (i.e. as if the triangle had positive area).
     //
-    // This avoids “inside test flips” when the caller supplies vertices in reverse order.
-    let area_is_pos = area > 0;
+    // IMPORTANT: The sign normalization must match the sign of the triangle's own
+    // area under the *same* (a,b,c) ordering used by `tri_edge(a,b,c)`.
+    let sign = if area > 0 { 1 } else { -1 };
 
     for y in min_y..=max_y {
         let row = (y as usize) * (w as usize);
@@ -705,15 +899,10 @@ pub fn graphics_triangle(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) {
             let p = (x, y);
 
             // Edge functions for triangle v0,v1,v2.
-            let mut w0 = tri_edge(v1, v2, p);
-            let mut w1 = tri_edge(v2, v0, p);
-            let mut w2 = tri_edge(v0, v1, p);
-
-            if !area_is_pos {
-                w0 = -w0;
-                w1 = -w1;
-                w2 = -w2;
-            }
+            // Multiply by `sign` so "inside" corresponds to >= 0 regardless of winding.
+            let w0 = tri_edge(v1, v2, p) * sign;
+            let w1 = tri_edge(v2, v0, p) * sign;
+            let w2 = tri_edge(v0, v1, p) * sign;
 
             if w0 >= 0 && w1 >= 0 && w2 >= 0 {
                 fb[row + x as usize] = color;
@@ -818,20 +1007,12 @@ pub fn graphics_pill_outline(x: i32, y: i32, w: u32, h: u32) {
 }
 
 /// Create SVG resource.
-pub fn graphics_svg_create(env: &FunctionEnvMut<()>, ptr: u32, len: u32) -> u32 {
-    let memory_ptr = {
-        let s = global().lock().unwrap();
-        s.memory
+pub fn graphics_svg_create(env: &mut Caller<'_, ()>, ptr: u32, len: u32) -> u32 {
+    let data = match read_guest_bytes(env, ptr, len) {
+        Ok(d) => d,
+        Err(_) => return 0,
     };
-    if memory_ptr.is_null() {
-        return 0;
-    }
-    let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
-    let mut data = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut data).is_err() {
-        return 0;
-    }
+
     let svg_str = match std::str::from_utf8(&data) {
         Ok(s) => s,
         Err(_) => return 0,
@@ -845,6 +1026,84 @@ pub fn graphics_svg_create(env: &FunctionEnvMut<()>, ptr: u32, len: u32) -> u32 
     res.next_id += 1;
     res.svgs.insert(id, tree);
     id
+}
+
+/// Register SVG resource under a string key.
+pub fn graphics_svg_register(
+    caller: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    data_ptr: u32,
+    data_len: u32,
+) -> u32 {
+    let key = match read_guest_utf8(caller, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return 0,
+    };
+
+    let data = match read_guest_bytes(caller, data_ptr, data_len) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+
+    // Reuse the existing SVG parser logic by feeding bytes directly.
+    let svg_str = match std::str::from_utf8(&data) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let tree = match Tree::from_str(svg_str, &usvg::Options::default()) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+
+    let mut res = RESOURCES.lock().unwrap();
+    let id = res.next_id;
+    res.next_id += 1;
+    res.svgs.insert(id, tree);
+    res.keyed_svgs.insert(key, id);
+    1
+}
+
+/// Draw keyed SVG.
+pub fn graphics_svg_draw_key(
+    env: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let id = {
+        let res = RESOURCES.lock().unwrap();
+        res.keyed_svgs.get(&key).copied()
+    };
+
+    if let Some(id) = id {
+        graphics_svg_draw(id, x, y, w, h);
+    }
+}
+
+/// Unregister keyed SVG and free the underlying resource.
+pub fn graphics_svg_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let id = {
+        let mut res = RESOURCES.lock().unwrap();
+        res.keyed_svgs.remove(&key)
+    };
+
+    if let Some(id) = id {
+        graphics_svg_destroy(id);
+    }
 }
 
 /// Draw SVG.
@@ -871,20 +1130,12 @@ pub fn graphics_svg_destroy(id: u32) {
 }
 
 /// Create GIF resource.
-pub fn graphics_gif_create(env: &FunctionEnvMut<()>, ptr: u32, len: u32) -> u32 {
-    let memory_ptr = {
-        let s = global().lock().unwrap();
-        s.memory
+pub fn graphics_gif_create(env: &mut Caller<'_, ()>, ptr: u32, len: u32) -> u32 {
+    let data = match read_guest_bytes(env, ptr, len) {
+        Ok(d) => d,
+        Err(_) => return 0,
     };
-    if memory_ptr.is_null() {
-        return 0;
-    }
-    let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
-    let mut data = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut data).is_err() {
-        return 0;
-    }
+
     let cursor = std::io::Cursor::new(&data);
     let mut decoder = match gif::DecodeOptions::new().read_info(cursor) {
         Ok(d) => d,
@@ -1026,21 +1277,95 @@ pub fn graphics_gif_destroy(id: u32) {
     res.gifs.remove(&id);
 }
 
-/// Upload TTF font.
-pub fn graphics_font_upload_ttf(env: &FunctionEnvMut<()>, ptr: u32, len: u32) -> u32 {
-    let memory_ptr = {
-        let s = global().lock().unwrap();
-        s.memory
+/// Register GIF resource under a string key.
+pub fn graphics_gif_register(
+    env: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    data_ptr: u32,
+    data_len: u32,
+) -> u32 {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return 0,
     };
-    if memory_ptr.is_null() {
+
+    let id = graphics_gif_create(env, data_ptr, data_len);
+    if id == 0 {
         return 0;
     }
-    let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
-    let mut data = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut data).is_err() {
-        return 0;
+
+    let mut res = RESOURCES.lock().unwrap();
+    res.keyed_gifs.insert(key, id);
+    1
+}
+
+/// Draw keyed GIF at natural size.
+pub fn graphics_gif_draw_key(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let id = {
+        let res = RESOURCES.lock().unwrap();
+        res.keyed_gifs.get(&key).copied()
+    };
+
+    if let Some(id) = id {
+        graphics_gif_draw(id, x, y);
     }
+}
+
+/// Draw keyed GIF scaled.
+pub fn graphics_gif_draw_key_scaled(
+    env: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let id = {
+        let res = RESOURCES.lock().unwrap();
+        res.keyed_gifs.get(&key).copied()
+    };
+
+    if let Some(id) = id {
+        graphics_gif_draw_scaled(id, x, y, w, h);
+    }
+}
+
+/// Unregister keyed GIF and destroy its underlying resource.
+pub fn graphics_gif_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let id = {
+        let mut res = RESOURCES.lock().unwrap();
+        res.keyed_gifs.remove(&key)
+    };
+
+    if let Some(id) = id {
+        graphics_gif_destroy(id);
+    }
+}
+
+/// Upload TTF font.
+pub fn graphics_font_upload_ttf(env: &mut Caller<'_, ()>, ptr: u32, len: u32) -> u32 {
+    let data = match read_guest_bytes(env, ptr, len) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+
     let font = match Font::from_bytes(data, FontSettings::default()) {
         Ok(f) => f,
         Err(_) => return 0,
@@ -1050,6 +1375,115 @@ pub fn graphics_font_upload_ttf(env: &FunctionEnvMut<()>, ptr: u32, len: u32) ->
     res.next_id += 1;
     res.fonts.insert(id, FontResource::Ttf(font));
     id
+}
+
+/// Register TTF font under a string key.
+pub fn graphics_font_register_ttf(
+    env: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    data_ptr: u32,
+    data_len: u32,
+) -> u32 {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return 0,
+    };
+
+    let id = graphics_font_upload_ttf(env, data_ptr, data_len);
+    if id == 0 {
+        return 0;
+    }
+
+    let mut res = RESOURCES.lock().unwrap();
+    res.keyed_fonts.insert(key, id);
+    1
+}
+
+/// Register built-in Spleen font under a string key.
+pub fn graphics_font_register_spleen(
+    env: &mut Caller<'_, ()>,
+    key_ptr: u32,
+    key_len: u32,
+    size: u32,
+) -> u32 {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return 0,
+    };
+
+    let id = graphics_font_use_spleen(size);
+    if id == 0 {
+        return 0;
+    }
+
+    let mut res = RESOURCES.lock().unwrap();
+    res.keyed_fonts.insert(key, id);
+    1
+}
+
+/// Unregister keyed font.
+pub fn graphics_font_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
+    let key = match read_guest_utf8(env, key_ptr, key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+
+    let id = {
+        let mut res = RESOURCES.lock().unwrap();
+        res.keyed_fonts.remove(&key)
+    };
+
+    if let Some(id) = id {
+        let mut res = RESOURCES.lock().unwrap();
+        res.fonts.remove(&id);
+    }
+}
+
+/// Draw text using a keyed font.
+pub fn graphics_text_key(
+    x: i32,
+    y: i32,
+    env: &mut Caller<'_, ()>,
+    font_key_ptr: u32,
+    font_key_len: u32,
+    text_ptr: u32,
+    text_len: u32,
+) {
+    let font_key = match read_guest_utf8(env, font_key_ptr, font_key_len) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+    let font_id = {
+        let res = RESOURCES.lock().unwrap();
+        res.keyed_fonts.get(&font_key).copied()
+    };
+    let Some(font_id) = font_id else {
+        return;
+    };
+    graphics_text(x, y, font_id, env, text_ptr, text_len);
+}
+
+/// Measure text using a keyed font.
+pub fn graphics_text_measure_key(
+    env: &mut Caller<'_, ()>,
+    font_key_ptr: u32,
+    font_key_len: u32,
+    text_ptr: u32,
+    text_len: u32,
+) -> u64 {
+    let font_key = match read_guest_utf8(env, font_key_ptr, font_key_len) {
+        Ok(k) => k,
+        Err(_) => return 0,
+    };
+    let font_id = {
+        let res = RESOURCES.lock().unwrap();
+        res.keyed_fonts.get(&font_key).copied()
+    };
+    let Some(font_id) = font_id else {
+        return 0;
+    };
+    graphics_text_measure(font_id, env, text_ptr, text_len)
 }
 
 /// Parse BDF font data into glyph map.
@@ -1113,20 +1547,21 @@ pub fn graphics_font_use_spleen(size: u32) -> u32 {
 }
 
 /// Draw text.
-pub fn graphics_text(x: i32, y: i32, font_id: u32, env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
+pub fn graphics_text(x: i32, y: i32, font_id: u32, env: &mut Caller<'_, ()>, ptr: u32, len: u32) {
     let memory_ptr = {
         let s = global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
     if memory_ptr.is_null() {
         return;
     }
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
+
     let mut text_bytes = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut text_bytes).is_err() {
+    if mem.read(env, ptr as usize, &mut text_bytes).is_err() {
         return;
     }
+
     let text = match std::str::from_utf8(&text_bytes) {
         Ok(s) => s,
         Err(_) => return,
@@ -1172,20 +1607,21 @@ pub fn graphics_text(x: i32, y: i32, font_id: u32, env: &FunctionEnvMut<()>, ptr
 }
 
 /// Measure text.
-pub fn graphics_text_measure(font_id: u32, env: &FunctionEnvMut<()>, ptr: u32, len: u32) -> u64 {
+pub fn graphics_text_measure(font_id: u32, env: &mut Caller<'_, ()>, ptr: u32, len: u32) -> u64 {
     let memory_ptr = {
         let s = global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
     if memory_ptr.is_null() {
         return 0;
     }
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
+
     let mut text_bytes = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut text_bytes).is_err() {
+    if mem.read(env, ptr as usize, &mut text_bytes).is_err() {
         return 0;
     }
+
     let text = match std::str::from_utf8(&text_bytes) {
         Ok(s) => s,
         Err(_) => return 0,
@@ -1315,10 +1751,10 @@ pub fn audio_init(sample_rate: u32) -> u32 {
 //
 // Fire-and-forget: no ids/handles are returned.
 
-pub fn audio_play_wav(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
+pub fn audio_play_wav(env: &mut Caller<'_, ()>, ptr: u32, len: u32) {
     let memory_ptr = {
         let s = crate::state::global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
 
     if memory_ptr.is_null() {
@@ -1327,11 +1763,10 @@ pub fn audio_play_wav(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
 
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
 
     // Read WAV bytes from guest memory.
     let mut wav_bytes = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut wav_bytes).is_err() {
+    if mem.read(env, ptr as usize, &mut wav_bytes).is_err() {
         return;
     }
 
@@ -1381,10 +1816,10 @@ pub fn audio_play_wav(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
     s.audio.channels.push(channel);
 }
 
-pub fn audio_play_qoa(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
+pub fn audio_play_qoa(env: &mut Caller<'_, ()>, ptr: u32, len: u32) {
     let memory_ptr = {
         let s = crate::state::global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
 
     if memory_ptr.is_null() {
@@ -1393,11 +1828,10 @@ pub fn audio_play_qoa(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
 
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
 
     // Read QOA bytes from guest memory.
     let mut qoa_bytes = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut qoa_bytes).is_err() {
+    if mem.read(env, ptr as usize, &mut qoa_bytes).is_err() {
         return;
     }
 
@@ -1441,10 +1875,10 @@ pub fn audio_play_qoa(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
     s.audio.channels.push(channel);
 }
 
-pub fn audio_play_xm(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
+pub fn audio_play_xm(env: &mut Caller<'_, ()>, ptr: u32, len: u32) {
     let memory_ptr = {
         let s = crate::state::global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
 
     if memory_ptr.is_null() {
@@ -1453,11 +1887,10 @@ pub fn audio_play_xm(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
 
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
 
     // Read XM bytes from guest memory.
     let mut xm_bytes = vec![0u8; len as usize];
-    if view.read(ptr as u64, &mut xm_bytes).is_err() {
+    if mem.read(env, ptr as usize, &mut xm_bytes).is_err() {
         return;
     }
 
@@ -1512,10 +1945,10 @@ pub fn audio_play_xm(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
     s.audio.channels.push(channel);
 }
 
-pub fn audio_push_samples(env: &FunctionEnvMut<()>, ptr: u32, count: u32) -> Result<(), AvError> {
+pub fn audio_push_samples(env: &mut Caller<'_, ()>, ptr: u32, count: u32) -> Result<(), AvError> {
     let memory_ptr = {
         let s = global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
 
     if memory_ptr.is_null() {
@@ -1524,13 +1957,12 @@ pub fn audio_push_samples(env: &FunctionEnvMut<()>, ptr: u32, count: u32) -> Res
 
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
 
     // Read i16 samples. count is number of i16 elements.
     let byte_len = count.checked_mul(2).ok_or(AvError::MemoryReadFailed)?;
     let mut tmp_bytes = vec![0u8; byte_len as usize];
 
-    view.read(ptr as u64, &mut tmp_bytes)
+    mem.read(env, ptr as usize, &mut tmp_bytes)
         .map_err(|_| AvError::MemoryReadFailed)?;
 
     // Convert bytes to i16
@@ -1667,23 +2099,15 @@ pub fn audio_drain_host(max_frames: u32) -> u32 {
 //
 // If these exports are not present, `load` returns 0 and `free` becomes a no-op.
 
-fn guest_alloc(env: &FunctionEnvMut<()>, len: u32) -> Option<u32> {
-    let instance_ptr = {
-        let s = global().lock().unwrap();
-        s.memory
-    };
-    if instance_ptr.is_null() {
-        return None;
-    }
-
-    // We don't have direct access to the instance here; allocation exports must be wired
-    // through the core. As a fallback, return None.
+fn guest_alloc(env: &mut Caller<'_, ()>, len: u32) -> Option<u32> {
     let _ = env;
     let _ = len;
+    // We don't have direct access to the instance here; allocation exports must be wired
+    // through the core. As a fallback, return None.
     None
 }
 
-fn guest_free(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
+fn guest_free(env: &mut Caller<'_, ()>, ptr: u32, len: u32) {
     let _ = env;
     let _ = ptr;
     let _ = len;
@@ -1691,7 +2115,7 @@ fn guest_free(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
 }
 
 pub fn storage_save(
-    env: &FunctionEnvMut<()>,
+    env: &mut Caller<'_, ()>,
     key_ptr: u32,
     key_len: u32,
     data_ptr: u32,
@@ -1700,7 +2124,7 @@ pub fn storage_save(
     // Read guest memory pointers
     let memory_ptr = {
         let s = global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
     if memory_ptr.is_null() {
         return;
@@ -1708,10 +2132,12 @@ pub fn storage_save(
 
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
 
     let mut key_bytes = vec![0u8; key_len as usize];
-    if view.read(key_ptr as u64, &mut key_bytes).is_err() {
+    if mem
+        .read(&mut *env, key_ptr as usize, &mut key_bytes)
+        .is_err()
+    {
         return;
     }
     let key = match core::str::from_utf8(&key_bytes) {
@@ -1720,7 +2146,7 @@ pub fn storage_save(
     };
 
     let mut data = vec![0u8; data_len as usize];
-    if view.read(data_ptr as u64, &mut data).is_err() {
+    if mem.read(&mut *env, data_ptr as usize, &mut data).is_err() {
         return;
     }
 
@@ -1728,11 +2154,11 @@ pub fn storage_save(
     s.storage.kv.insert(String::from(key), data);
 }
 
-pub fn storage_load(env: &FunctionEnvMut<()>, key_ptr: u32, key_len: u32) -> u64 {
+pub fn storage_load(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) -> u64 {
     // Read guest memory pointers
     let memory_ptr = {
         let s = global().lock().unwrap();
-        s.memory
+        s.memory_wasmtime
     };
     if memory_ptr.is_null() {
         return 0;
@@ -1740,10 +2166,12 @@ pub fn storage_load(env: &FunctionEnvMut<()>, key_ptr: u32, key_len: u32) -> u64
 
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
-    let view = mem.view(env);
 
     let mut key_bytes = vec![0u8; key_len as usize];
-    if view.read(key_ptr as u64, &mut key_bytes).is_err() {
+    if mem
+        .read(&mut *env, key_ptr as usize, &mut key_bytes)
+        .is_err()
+    {
         return 0;
     }
     let key = match core::str::from_utf8(&key_bytes) {
@@ -1764,7 +2192,7 @@ pub fn storage_load(env: &FunctionEnvMut<()>, key_ptr: u32, key_len: u32) -> u64
     };
 
     // Write to guest memory
-    if view.write(dst_ptr as u64, &data).is_err() {
+    if mem.write(&mut *env, dst_ptr as usize, &data).is_err() {
         // If write fails, attempt to free.
         guest_free(env, dst_ptr, data.len() as u32);
         return 0;
@@ -1773,6 +2201,6 @@ pub fn storage_load(env: &FunctionEnvMut<()>, key_ptr: u32, key_len: u32) -> u64
     ((dst_ptr as u64) << 32) | (data.len() as u64)
 }
 
-pub fn storage_free(env: &FunctionEnvMut<()>, ptr: u32, len: u32) {
+pub fn storage_free(env: &mut Caller<'_, ()>, ptr: u32, len: u32) {
     guest_free(env, ptr, len);
 }

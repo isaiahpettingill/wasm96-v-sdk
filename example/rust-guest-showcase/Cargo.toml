@@ -2,9 +2,21 @@
 name = "rust-guest-showcase"
 version = "0.1.0"
 edition = "2021"
+publish = false
+
+# Prevent this example crate from being built/tested as part of native (host) workspace builds.
+# It's intended to be compiled for `wasm32-unknown-unknown` and loaded by `wasm96-core`.
+autoexamples = false
+autobins = false
+autotests = false
+autobenches = false
 
 [lib]
 crate-type = ["cdylib"]
+# Do not build this crate's tests/bench/doctests by default on the host.
+test = false
+doctest = false
+bench = false
 
 [dependencies]
 wasm96-sdk = { path = "../../wasm96-sdk" }

@@ -2,6 +2,11 @@
 git clone https://github.com/isaiahpettingill/wasm96.git
 cd wasm96
 
+## Runtime
+The core runs guest modules using **Wasmtime**.
+
+Wasmtime configuration is set up to enable a broad set of WebAssembly feature flags (in both Cargo features and `wasmtime::Config`) for maximum guest compatibility.
+
 # Build the libretro core
 cargo build --release --package wasm96-core
 ```
@@ -10,15 +15,25 @@ The core library will be at `target/release/libwasm96_core.so` (or equivalent fo
 
 ### Writing a Guest
 1. Use the Rust SDK (`wasm96-sdk`), Zig SDK (`wasm96-zig-sdk`), or Go SDK (`wasm96-go-sdk`) for ergonomic bindings.
-2. Implement the required exports:
+2. Implement the required export:
    - `setup()`: Initialize your application (e.g., set screen size)
+3. Implement optional exports (preferred runtime entrypoints):
    - `update()`: Update game logic (called once per frame)
    - `draw()`: Issue drawing commands (called once per frame)
-3. Compile to WASM32 target
-4. Load the .wasm file into the wasm96 core via your libretro frontend
+4. (Optional) WASI-style exports are also supported:
+   - If `draw()` is not exported, the core will treat `_start()` as the draw function.
+   - If `draw()` and `_start()` are not exported, the core will treat `main()` as the draw function.
+5. Compile to WASM32 target
+6. Load the `.wasm` file into the wasm96 core via your libretro frontend
+
+### Entrypoint precedence rules
+- `setup()` is required.
+- `draw()` takes precedence over `_start()` and `main()`.
+- `_start()` takes precedence over `main()` (only used when `draw()` is missing).
+- `update()` is optional; if missing, update is treated as a no-op.
 
 ### Running
-Load the wasm96 core in your libretro frontend and select a .wasm file as the "game". The core will instantiate the WASM module and start calling the guest's entrypoints.
+Load the wasm96 core in your libretro frontend and select a `.wasm` file as the "game". The core will instantiate the WASM module and start calling the guest entrypoints according to the precedence rules above.
 
 ## SDK
 
@@ -99,8 +114,11 @@ wasm96/
 # Build all workspace members
 cargo build --workspace
 
-# Run tests
+# Run tests (default feature sets)
 cargo test --workspace
+
+# Run tests with all crate feature flags enabled (recommended for CI)
+cargo test --workspace --all-features
 ```
 
 ## Recent Fixes

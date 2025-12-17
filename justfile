@@ -2,7 +2,6 @@ build-examples:
     cargo build -p rust_guest --release --target wasm32-unknown-unknown
     cargo build -p rust-guest-showcase --release --target wasm32-unknown-unknown
     cargo build -p rust_guest_mp_platformer --release --target wasm32-unknown-unknown
-    cd example/go-guest && just build
     cd example/zig-guest && zig build
 
 build-sdks:
@@ -26,9 +25,6 @@ run-rust-showcase:
 
 run-rust-platformer:
     just run ./target/wasm32-unknown-unknown/release/rust_guest_mp_platformer.wasm
-
-run-go-guest:
-    just run ./example/go-guest/go-guest.wasm
 
 run-zig-guest:
     just run ./example/zig-guest/zig-out/bin/zig-guest.wasm
