@@ -21,16 +21,19 @@ const PNG_DATA: &[u8] = include_bytes!("assets/ink.png");
 const TTF_DATA: &[u8] = include_bytes!("assets/UnifrakturMaguntia-Regular.ttf");
 const WAV_DATA: &[u8] = include_bytes!("assets/crickets.wav");
 
-static mut SVG_ID: u32 = 0;
-static mut GIF_ID: u32 = 0;
-static mut FONT_ID: u32 = 0;
-
 static mut FRAME_COUNT: u32 = 0;
+
+// Keyed resources: avoid numeric handles + global mutable IDs.
+// These keys must be stable and are used by the host as identifiers.
+const SVG_KEY: &str = "showcase/man.svg";
+const GIF_KEY: &str = "showcase/200.gif";
+const PNG_KEY: &str = "showcase/ink.png";
+const FONT_KEY: &str = "showcase/unifraktur.ttf";
 
 #[unsafe(no_mangle)]
 pub extern "C" fn setup() {
     // Set screen size
-    graphics::set_size(800, 600);
+    graphics::set_size(1200, 800);
 
     // Initialize audio
     audio::init(44100);
@@ -38,20 +41,11 @@ pub extern "C" fn setup() {
     // Play looping WAV
     audio::play_wav(WAV_DATA);
 
-    // Load SVG
-    unsafe {
-        SVG_ID = graphics::svg_create(SVG_DATA);
-    }
-
-    // Load GIF
-    unsafe {
-        GIF_ID = graphics::gif_create(GIF_DATA);
-    }
-
-    // Load TTF font
-    unsafe {
-        FONT_ID = graphics::font_upload_ttf(TTF_DATA);
-    }
+    // Register keyed resources with the host (no numeric handles).
+    let _ = graphics::svg_register(SVG_KEY, SVG_DATA);
+    let _ = graphics::gif_register(GIF_KEY, GIF_DATA);
+    let _ = graphics::png_register(PNG_KEY, PNG_DATA);
+    let _ = graphics::font_register_ttf(FONT_KEY, TTF_DATA);
 }
 
 #[unsafe(no_mangle)]
@@ -68,150 +62,19 @@ pub extern "C" fn draw() {
     let r = ((time.sin() + 1.0) * 127.5) as u8;
     let g = ((time.cos() + 1.0) * 127.5) as u8;
     let b = 100;
+
     graphics::background(r, g, b);
 
-    // Draw all shapes
-    draw_shapes();
+    // Draw keyed PNG (registered in setup)
+    graphics::png_draw_key(PNG_KEY, 100, 100);
 
-    // Draw images and assets
-    draw_assets();
+    // Draw raw PNG bytes directly (one-shot)
+    graphics::image_png(250, 100, PNG_DATA);
 
-    // Draw text
-    draw_text();
+    // Draw keyed SVG + GIF
+    graphics::svg_draw_key(SVG_KEY, 420, 60, 320, 320);
+    graphics::gif_draw_key_scaled(GIF_KEY, 40, 320, 160, 120);
 
-    // Draw input status
-    draw_input_status();
-}
-
-fn draw_shapes() {
-    // Points
-    graphics::set_color(255, 255, 255, 255);
-    for i in 0..100 {
-        let x = (i * 8) % 800;
-        let y = 50 + (i / 100) * 10;
-        graphics::point(x as i32, y as i32);
-    }
-
-    // Lines
-    graphics::set_color(255, 0, 0, 255);
-    graphics::line(10, 70, 100, 120);
-    graphics::line(100, 70, 10, 120);
-
-    // Rectangles
-    graphics::set_color(0, 255, 0, 255);
-    graphics::rect(120, 70, 50, 50);
-    graphics::set_color(255, 255, 0, 255);
-    graphics::rect_outline(180, 70, 50, 50);
-
-    // Circles
-    graphics::set_color(0, 0, 255, 255);
-    graphics::circle(250, 95, 25);
-    graphics::set_color(255, 0, 255, 255);
-    graphics::circle_outline(320, 95, 25);
-
-    // Triangles
-    graphics::set_color(255, 165, 0, 255);
-    graphics::triangle(380, 70, 430, 70, 405, 120);
-    graphics::set_color(0, 255, 255, 255);
-    graphics::triangle_outline(440, 70, 490, 70, 465, 120);
-
-    // Bezier curves
-    graphics::set_color(128, 0, 128, 255);
-    graphics::bezier_quadratic(10, 140, 50, 160, 90, 140, 20);
-    graphics::bezier_cubic(100, 140, 120, 160, 140, 160, 160, 140, 20);
-
-    // Pills
-    graphics::set_color(255, 192, 203, 255);
-    graphics::pill(200, 140, 80, 40);
-    graphics::set_color(0, 128, 0, 255);
-    graphics::pill_outline(300, 140, 80, 40);
-}
-
-fn draw_assets() {
-    // Draw SVG
-    unsafe {
-        graphics::svg_draw(SVG_ID, 400, 200, 100, 100);
-    }
-
-    // Draw GIF
-    unsafe {
-        graphics::gif_draw_scaled(GIF_ID, 520, 200, 100, 100);
-    }
-
-    // Draw PNG via host-side PNG decoding (draws at natural size)
-    graphics::image_png(10, 200, PNG_DATA);
-}
-
-fn draw_text() {
-    // Use loaded TTF font
-    unsafe {
-        if FONT_ID != 0 {
-            graphics::set_color(255, 255, 255, 255);
-            graphics::text(10, 320, FONT_ID, "Hello from wasm96!");
-            graphics::text(10, 350, FONT_ID, "This is a TTF font.");
-        }
-    }
-
-    // Use built-in Spleen font
-    graphics::font_use_spleen(16);
-    graphics::set_color(255, 255, 0, 255);
-    graphics::text(10, 380, 0, "Spleen font: ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-    graphics::text(10, 400, 0, "abcdefghijklmnopqrstuvwxyz 0123456789");
-}
-
-fn draw_input_status() {
-    graphics::set_color(255, 255, 255, 255);
-    let spleen_font = graphics::font_use_spleen(8);
-
-    for port in 0..4 {
-        let y = 430 + port * 40;
-        graphics::text(10, y, spleen_font, &alloc::format!("Controller {}:", port));
-
-        let buttons = [
-            (Button::A, "A"),
-            (Button::B, "B"),
-            (Button::X, "X"),
-            (Button::Y, "Y"),
-            (Button::Start, "Start"),
-            (Button::Select, "Select"),
-            (Button::Up, "Up"),
-            (Button::Down, "Down"),
-            (Button::Left, "Left"),
-            (Button::Right, "Right"),
-            (Button::L1, "L1"),
-            (Button::R1, "R1"),
-            (Button::L2, "L2"),
-            (Button::R2, "R2"),
-            (Button::L3, "L3"),
-            (Button::R3, "R3"),
-        ];
-
-        let mut x = 100;
-        for (btn, name) in buttons.iter() {
-            if input::is_button_down(port as u32, *btn) {
-                graphics::set_color(0, 255, 0, 255);
-            } else {
-                graphics::set_color(128, 128, 128, 255);
-            }
-            graphics::text(x, y, spleen_font, name);
-            x += 30;
-        }
-    }
-
-    // Mouse
-    let mx = input::get_mouse_x();
-    let my = input::get_mouse_y();
-    graphics::set_color(255, 0, 0, 255);
-    graphics::text(
-        10,
-        590,
-        spleen_font,
-        &alloc::format!("Mouse: ({}, {})", mx, my),
-    );
-    if input::is_mouse_down(0) {
-        graphics::text(200, 590, spleen_font, "Left Click");
-    }
-    if input::is_mouse_down(1) {
-        graphics::text(280, 590, spleen_font, "Right Click");
-    }
+    // Draw keyed text (registered font)
+    graphics::text_key(24, 24, FONT_KEY, "wasm96 showcase");
 }

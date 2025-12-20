@@ -14,9 +14,9 @@ cargo build --release --package wasm96-core
 The core library will be at `target/release/libwasm96_core.so` (or equivalent for your platform).
 
 ### Writing a Guest
-1. Use the Rust SDK (`wasm96-sdk`), Zig SDK (`wasm96-zig-sdk`), or Go SDK (`wasm96-go-sdk`) for ergonomic bindings.
+1. Use the Rust SDK (`wasm96-sdk`) or Zig SDK (`wasm96-zig-sdk`) for ergonomic bindings.
 2. Implement the required export:
-   - `setup()`: Initialize your application (e.g., set screen size)
+   - `setup()`: Initialize your application (e.g., set screen size, register assets)
 3. Implement optional exports (preferred runtime entrypoints):
    - `update()`: Update game logic (called once per frame)
    - `draw()`: Issue drawing commands (called once per frame)
@@ -35,26 +35,64 @@ The core library will be at `target/release/libwasm96_core.so` (or equivalent fo
 ### Running
 Load the wasm96 core in your libretro frontend and select a `.wasm` file as the "game". The core will instantiate the WASM module and start calling the guest entrypoints according to the precedence rules above.
 
+## ABI notes: keyed resources (strings)
+The core uses **keyed resources** for images and fonts. Instead of receiving numeric handles from `*_create(...)`, guests register assets under a stable string key and later draw/use them by that key.
+
+This avoids global mutable “resource id” state in guests and makes resource usage explicit.
+
+### PNG (encoded bytes)
+- Direct draw (one-shot):
+  - `graphics::image_png(x, y, png_bytes)`
+- Register once (typically in `setup()`):
+  - `graphics::png_register("ui/logo", png_bytes)`
+- Draw by key (in `draw()`):
+  - `graphics::png_draw_key("ui/logo", x, y)`
+  - `graphics::png_draw_key_scaled("ui/logo", x, y, w, h)`
+- Unregister (optional):
+  - `graphics::png_unregister("ui/logo")`
+
+### SVG (encoded bytes)
+- Register:
+  - `graphics::svg_register("icons/player", svg_bytes)`
+- Draw:
+  - `graphics::svg_draw_key("icons/player", x, y, w, h)`
+- Unregister (optional):
+  - `graphics::svg_unregister("icons/player")`
+
+### GIF (encoded bytes)
+- Register:
+  - `graphics::gif_register("fx/explosion", gif_bytes)`
+- Draw:
+  - `graphics::gif_draw_key("fx/explosion", x, y)`
+  - `graphics::gif_draw_key_scaled("fx/explosion", x, y, w, h)`
+- Unregister (optional):
+  - `graphics::gif_unregister("fx/explosion")`
+
+### Fonts + text (keyed)
+- Register a font under a key:
+  - Built-in Spleen:
+    - `graphics::font_register_spleen("font/spleen/16", 16)`
+  - TTF bytes:
+    - `graphics::font_register_ttf("font/title", ttf_bytes)`
+- Draw text using the font key:
+  - `graphics::text_key(x, y, "font/spleen/16", "Hello")`
+- Measure text:
+  - `graphics::text_measure_key("font/spleen/16", "Hello")`
+
 ## SDK
 
 ### Rust SDK (`wasm96-sdk/`)
-- Handwritten bindings matching the WIT interface
+- Handwritten bindings matching the core ABI
 - Safe wrappers around raw `extern "C"` imports
 - Entry point: `wasm96_sdk::prelude::*`
 - Supports `no_std` for minimal WASM builds
 - Optional wee_alloc for custom allocator
 
 ### Zig SDK (`wasm96-zig-sdk/`)
-- Handwritten bindings matching the WIT interface
+- Handwritten bindings matching the core ABI
 - Safe wrappers around raw extern functions
 - Entry point: `@import("wasm96")`
 - Compiles directly to WASM32 (freestanding); produces a module exporting `setup`, `update`, and `draw` (no WASI `_start`)
-
-### Go SDK (`wasm96-go-sdk/`)
-- Handwritten bindings matching the WIT interface
-- Safe wrappers around raw WebAssembly imports
-- Entry point: `import "wasm96-go-sdk"`
-- Compiles directly to WASM using WASI Preview 1 (wasip1)
 
 ## Examples
 
@@ -64,7 +102,6 @@ The `example/` directory contains guest applications:
 - `rust-guest-mp-platformer/`: Multiplayer platformer game (Rust)
 - `rust-guest-showcase/`: Comprehensive demo of all features (Rust)
 - `zig-guest/`: Basic hello-world example (Zig)
-- `go-guest/`: Basic hello-world example (Go)
 
 To build a Rust example:
 ```bash
@@ -76,11 +113,6 @@ To build the Zig example:
 cd example/zig-guest && zig build
 ```
 
-To build the Go example:
-```bash
-cd example/go-guest && GOOS=wasip1 GOARCH=wasm go build -o go-guest.wasm
-```
-
 ## Project Structure
 
 ```
@@ -88,7 +120,6 @@ wasm96/
 ├── wasm96-core/          # Libretro core implementation
 ├── wasm96-sdk/           # Handwritten Rust SDK
 ├── wasm96-zig-sdk/       # Handwritten Zig SDK
-├── wasm96-go-sdk/        # Handwritten Go SDK
 ├── wit/                  # WIT interface definitions
 ├── example/              # Guest examples
 ├── Cargo.toml            # Workspace configuration
@@ -105,7 +136,7 @@ wasm96/
 - See `AGENTS.md` for agent-specific rules
 
 ### Contributing
-- The ABI is handwritten; update bindings in `wasm96-core/src/abi/mod.rs`, `wasm96-sdk/src/lib.rs`, `wasm96-zig-sdk/src/main.zig`, and `wasm96-go-sdk/wasm96.go` in lockstep
+- The ABI is handwritten; update bindings in `wasm96-core/src/abi/mod.rs`, `wasm96-sdk/src/lib.rs`, and `wasm96-zig-sdk/src/main.zig` in lockstep
 - Update `wit/wasm96.wit` to reflect interface changes
 - SDKs.md is outdated and describes a different (upload-based) ABI; it may be removed or updated in the future
 
@@ -123,16 +154,20 @@ cargo test --workspace --all-features
 
 ## Recent Fixes
 
+### AV Module Refactor (host/core)
+The large `av/mod.rs` file has been split into multiple modules (`audio.rs`, `graphics.rs`, `resources.rs`, `storage.rs`, `utils.rs`, `tests.rs`) for better organization and maintainability. All public functions are re-exported from `av` to maintain API compatibility.
+
+### Runtime Module Refactor (host/core)
+The large `runtime/mod.rs` file has been split into multiple modules (`runtime.rs`, `imports.rs`) for better organization and maintainability. All public functions are re-exported from `runtime` to maintain API compatibility.
+
 ### GIF decoding + scaling (host/core)
-The libretro core correctly decodes animated GIFs as indexed-color images and expands them to RGBA using the per-frame palette (or the global palette when the frame does not provide one). Scaled GIF rendering uses nearest-neighbor resampling so `gif_draw_scaled` produces correctly-sized output.
+The libretro core correctly decodes animated GIFs as indexed-color images and expands them to RGBA using the per-frame palette (or the global palette when the frame does not provide one). Scaled GIF rendering uses nearest-neighbor resampling so `gif_draw_key_scaled` produces correctly-sized output.
 
 ### PNG decoding + drawing (host/core)
-The core now supports decoding **encoded PNG bytes** on the host and blitting the image at its natural size. This is intended for guests that embed PNG assets via `include_bytes!` and don’t want to ship a guest-side PNG decoder.
+The core supports decoding **encoded PNG bytes** on the host. Guests can draw PNGs directly via `image_png` or register them as keyed resources for repeated use (see “ABI notes: keyed resources (strings)” above).
 
-In the Rust SDK, use:
-- `graphics::image_png(x, y, png_bytes)`
-
-(Under the hood this maps to the import `wasm96_graphics_image_png(x, y, ptr, len)`.)
+### SDK Parity
+Both Rust and Zig SDKs now implement the full set of core features, including all drawing primitives, audio playback, and input handling.
 
 ### Triangle rasterization (host/core)
 Filled triangles are rasterized using a barycentric (edge-function) fill in the core. The implementation is winding-invariant (vertex order does not change filled results), deterministic, and clips to the framebuffer bounds.
@@ -159,4 +194,3 @@ MIT License - see `LICENSE` for details.
 - WAV playback is implemented using the hound library for decoding and mixing.
 - QOA playback is implemented using the qoaudio library for decoding and mixing.
 - XM playback is implemented using the xmrsplayer library for decoding and mixing.
-- SDKs.md contains information about planned multi-language SDKs for an older ABI version and may not reflect the current state.

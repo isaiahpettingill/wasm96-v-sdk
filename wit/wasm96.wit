@@ -60,68 +60,71 @@ world wasm96 {
     /// The host handles clipping and bounds checking.
     image: func(x: s32, y: s32, w: u32, h: u32, data: list<u8>);
 
+    /// Draw an image from raw PNG bytes at (x, y).
+    image-png: func(x: s32, y: s32, data: list<u8>);
+
     /// Register an SVG resource under a guest-provided string key.
     ///
     /// The host keeps the decoded representation, and the guest can reference it by key.
     /// Returns true on success.
-    svg-register: func(key: string, data: list<u8>) -> bool;
+    svg-register: func(key: u64, data: list<u8>) -> bool;
 
     /// Draw the SVG resource identified by `key` at (x,y) scaled to (w,h).
-    svg-draw: func(key: string, x: s32, y: s32, w: u32, h: u32);
+    svg-draw: func(key: u64, x: s32, y: s32, w: u32, h: u32);
 
     /// Unregister an SVG resource by key.
-    svg-unregister: func(key: string);
+    svg-unregister: func(key: u64);
 
     /// Register a GIF resource under a guest-provided string key.
     ///
     /// The host keeps the decoded frames, and the guest can reference it by key.
     /// Returns true on success.
-    gif-register: func(key: string, data: list<u8>) -> bool;
+    gif-register: func(key: u64, data: list<u8>) -> bool;
 
     /// Draw the GIF identified by `key` at (x,y) at its natural size, animating based on time.
-    gif-draw: func(key: string, x: s32, y: s32);
+    gif-draw: func(key: u64, x: s32, y: s32);
 
     /// Draw the GIF identified by `key` at (x,y) scaled to (w,h), animating based on time.
-    gif-draw-scaled: func(key: string, x: s32, y: s32, w: u32, h: u32);
+    gif-draw-scaled: func(key: u64, x: s32, y: s32, w: u32, h: u32);
 
     /// Unregister a GIF resource by key.
-    gif-unregister: func(key: string);
+    gif-unregister: func(key: u64);
 
     /// Register a PNG resource under a guest-provided string key.
     ///
     /// The host decodes the PNG and stores it as RGBA for later drawing.
     /// Returns true on success.
-    png-register: func(key: string, data: list<u8>) -> bool;
+    png-register: func(key: u64, data: list<u8>) -> bool;
 
     /// Draw the PNG identified by `key` at (x,y) at its natural size.
-    png-draw: func(key: string, x: s32, y: s32);
+    png-draw: func(key: u64, x: s32, y: s32);
 
     /// Draw the PNG identified by `key` at (x,y) scaled to (w,h).
-    png-draw-scaled: func(key: string, x: s32, y: s32, w: u32, h: u32);
+    png-draw-scaled: func(key: u64, x: s32, y: s32, w: u32, h: u32);
 
     /// Unregister a PNG resource by key.
-    png-unregister: func(key: string);
+    png-unregister: func(key: u64);
 
     /// Register a TrueType (TTF) font under a guest-provided string key.
     ///
     /// Returns true on success.
-    font-register-ttf: func(key: string, data: list<u8>) -> bool;
+    font-register-ttf: func(key: u64, data: list<u8>) -> bool;
 
     /// Register a built-in Spleen bitmap font under the provided key at the specified size.
     ///
     /// The canonical key for the built-in font family is `"spleen"`.
     /// Returns true on success.
-    font-register-spleen: func(key: string, size: u32) -> bool;
+    font-register-spleen: func(key: u64, size: u32) -> bool;
 
     /// Unregister a font by key.
-    font-unregister: func(key: string);
+    font-unregister: func(key: u64);
 
     /// Draw text at (x,y) using the font identified by `font-key` and the current color.
-    text: func(x: s32, y: s32, font-key: string, text: string);
+    text: func(x: s32, y: s32, font-key: u64, text: string);
 
     /// Measure the width and height of the text using the font identified by `font-key`.
     /// Returns (width, height).
-    text-measure: func(font-key: string, text: string) -> tuple<u32, u32>;
+    text-measure: func(font-key: u64, text: string) -> tuple<u32, u32>;
 
     /// Draw a filled triangle with vertices (x1,y1), (x2,y2), (x3,y3) using the current color.
     triangle: func(x1: s32, y1: s32, x2: s32, y2: s32, x3: s32, y3: s32);

@@ -24,6 +24,7 @@
 //!
 //! Raw RGBA blit:
 //! - `wasm96_graphics_image(x: i32, y: i32, w: u32, h: u32, ptr: u32, len: u32)`
+//! - `wasm96_graphics_image_png(x: i32, y: i32, ptr: u32, len: u32)`
 //!
 //! Keyed resources (no numeric ids required in the guest):
 //! - `wasm96_graphics_svg_register(key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32) -> u32` (bool)
@@ -131,6 +132,7 @@ pub mod host_imports {
 
     // Raw RGBA blit
     pub const GRAPHICS_IMAGE: &str = "wasm96_graphics_image";
+    pub const GRAPHICS_IMAGE_PNG: &str = "wasm96_graphics_image_png";
 
     // Keyed resources: SVG
     pub const GRAPHICS_SVG_REGISTER: &str = "wasm96_graphics_svg_register";

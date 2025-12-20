@@ -22,6 +22,7 @@ use libretro_backend::{Core, CoreInfo, RuntimeHandle, libretro_core};
 use crate::abi::GuestEntrypoints;
 
 /// The libretro core instance.
+#[derive(Default)]
 pub struct Wasm96Core {
     rt: Option<runtime::WasmtimeRuntime>,
     module: Option<wasmtime::Module>,
@@ -30,17 +31,6 @@ pub struct Wasm96Core {
     game_data: Option<libretro_backend::GameData>,
 }
 
-impl Default for Wasm96Core {
-    fn default() -> Self {
-        Self {
-            rt: None,
-            module: None,
-            instance: None,
-            entrypoints: None,
-            game_data: None,
-        }
-    }
-}
 
 impl Wasm96Core {
     fn ensure_runtime(&mut self) -> Result<(), ()> {

@@ -15,7 +15,7 @@ build-core:
 run_command := if os_family() == "windows" { "/c/RetroArch/retroarch.exe -L ./target/release/wasm96_core.dll" } else { "retroarch -L ./target/release/libwasm96_core.so" }
 
 run content-path: build-examples build-core
-    {{ run_command }} {{ content-path }}
+    RUST_BACKTRACE=1 {{ run_command }} {{ content-path }}
 
 run-rust-guest:
     just run ./target/wasm32-unknown-unknown/release/rust_guest.wasm

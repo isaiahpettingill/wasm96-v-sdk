@@ -47,6 +47,7 @@ pub struct AudioChannel {
     pub position_frames: usize,
 
     /// Source sample rate for this channel's PCM.
+    #[allow(dead_code)]
     pub sample_rate: u32,
 }
 
@@ -77,6 +78,9 @@ pub struct GlobalState {
     /// Stored as a raw pointer because the rest of the codebase accesses global state
     /// through a mutex-protected singleton and expects a stable address once set.
     pub memory_wasmtime: *const WasmtimeMemory,
+
+    /// Owned copy of the memory handle to ensure the pointer above remains valid.
+    pub memory_owned: Option<Box<WasmtimeMemory>>,
 
     /// Host-owned video state (system memory).
     pub video: VideoState,
@@ -144,15 +148,6 @@ pub struct AudioState {
     /// Guests can trigger playback via higher-level audio APIs and the core will mix
     /// these channels into the output stream.
     pub channels: Vec<AudioChannel>,
-
-    /// Next id to assign for a new `AudioChannel`.
-    pub next_channel_id: u32,
-
-    /// Mapping from public channel id to index in `channels`.
-    ///
-    /// NOTE: Kept as a simple vec-of-pairs to avoid pulling in a HashMap in state;
-    /// the number of channels is expected to be small.
-    pub channel_id_to_index: Vec<(u32, usize)>,
 }
 
 impl Default for AudioState {
@@ -162,8 +157,6 @@ impl Default for AudioState {
             host_queue: Vec::new(),
 
             channels: Vec::new(),
-            next_channel_id: 1,
-            channel_id_to_index: Vec::new(),
         }
     }
 }
@@ -195,7 +188,9 @@ pub fn set_runtime_handle(handle: &mut RuntimeHandle) {
 /// Set the guest memory for the Wasmtime runtime.
 pub fn set_guest_memory_wasmtime(memory: &WasmtimeMemory) {
     let mut s = global().lock().unwrap();
-    s.memory_wasmtime = memory as *const _;
+    let boxed = Box::new(*memory);
+    s.memory_wasmtime = &*boxed as *const _;
+    s.memory_owned = Some(boxed);
 }
 
 pub fn clear_on_unload() {
@@ -208,6 +203,7 @@ pub fn clear_on_unload() {
 
     s.handle = std::ptr::null_mut();
     s.memory_wasmtime = std::ptr::null();
+    s.memory_owned = None;
 
     s.video = VideoState::default();
     s.audio = AudioState::default();

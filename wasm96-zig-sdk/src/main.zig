@@ -39,23 +39,32 @@ pub const sys = struct {
     extern fn wasm96_graphics_circle(x: i32, y: i32, r: u32) void;
     extern fn wasm96_graphics_circle_outline(x: i32, y: i32, r: u32) void;
     extern fn wasm96_graphics_image(x: i32, y: i32, w: u32, h: u32, ptr: [*]const u8, len: usize) void;
+    extern fn wasm96_graphics_image_png(x: i32, y: i32, ptr: [*]const u8, len: usize) void;
     extern fn wasm96_graphics_triangle(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) void;
     extern fn wasm96_graphics_triangle_outline(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) void;
     extern fn wasm96_graphics_bezier_quadratic(x1: i32, y1: i32, cx: i32, cy: i32, x2: i32, y2: i32, segments: u32) void;
     extern fn wasm96_graphics_bezier_cubic(x1: i32, y1: i32, cx1: i32, cy1: i32, cx2: i32, cy2: i32, x2: i32, y2: i32, segments: u32) void;
     extern fn wasm96_graphics_pill(x: i32, y: i32, w: u32, h: u32) void;
     extern fn wasm96_graphics_pill_outline(x: i32, y: i32, w: u32, h: u32) void;
-    extern fn wasm96_graphics_svg_create(ptr: [*]const u8, len: usize) u32;
-    extern fn wasm96_graphics_svg_draw(id: u32, x: i32, y: i32, w: u32, h: u32) void;
-    extern fn wasm96_graphics_svg_destroy(id: u32) void;
-    extern fn wasm96_graphics_gif_create(ptr: [*]const u8, len: usize) u32;
-    extern fn wasm96_graphics_gif_draw(id: u32, x: i32, y: i32) void;
-    extern fn wasm96_graphics_gif_draw_scaled(id: u32, x: i32, y: i32, w: u32, h: u32) void;
-    extern fn wasm96_graphics_gif_destroy(id: u32) void;
-    extern fn wasm96_graphics_font_upload_ttf(ptr: [*]const u8, len: usize) u32;
-    extern fn wasm96_graphics_font_use_spleen(size: u32) u32;
-    extern fn wasm96_graphics_text(x: i32, y: i32, font: u32, ptr: [*]const u8, len: usize) void;
-    extern fn wasm96_graphics_text_measure(font: u32, ptr: [*]const u8, len: usize) u64;
+    extern fn wasm96_graphics_svg_register(key_ptr: [*]const u8, key_len: usize, data_ptr: [*]const u8, data_len: usize) u32;
+    extern fn wasm96_graphics_svg_draw_key(key_ptr: [*]const u8, key_len: usize, x: i32, y: i32, w: u32, h: u32) void;
+    extern fn wasm96_graphics_svg_unregister(key_ptr: [*]const u8, key_len: usize) void;
+
+    extern fn wasm96_graphics_gif_register(key_ptr: [*]const u8, key_len: usize, data_ptr: [*]const u8, data_len: usize) u32;
+    extern fn wasm96_graphics_gif_draw_key(key_ptr: [*]const u8, key_len: usize, x: i32, y: i32) void;
+    extern fn wasm96_graphics_gif_draw_key_scaled(key_ptr: [*]const u8, key_len: usize, x: i32, y: i32, w: u32, h: u32) void;
+    extern fn wasm96_graphics_gif_unregister(key_ptr: [*]const u8, key_len: usize) void;
+
+    extern fn wasm96_graphics_png_register(key_ptr: [*]const u8, key_len: usize, data_ptr: [*]const u8, data_len: usize) u32;
+    extern fn wasm96_graphics_png_draw_key(key_ptr: [*]const u8, key_len: usize, x: i32, y: i32) void;
+    extern fn wasm96_graphics_png_draw_key_scaled(key_ptr: [*]const u8, key_len: usize, x: i32, y: i32, w: u32, h: u32) void;
+    extern fn wasm96_graphics_png_unregister(key_ptr: [*]const u8, key_len: usize) void;
+
+    extern fn wasm96_graphics_font_register_ttf(key_ptr: [*]const u8, key_len: usize, data_ptr: [*]const u8, data_len: usize) u32;
+    extern fn wasm96_graphics_font_register_spleen(key_ptr: [*]const u8, key_len: usize, size: u32) u32;
+    extern fn wasm96_graphics_font_unregister(key_ptr: [*]const u8, key_len: usize) void;
+    extern fn wasm96_graphics_text_key(x: i32, y: i32, font_key_ptr: [*]const u8, font_key_len: usize, text_ptr: [*]const u8, text_len: usize) void;
+    extern fn wasm96_graphics_text_measure_key(font_key_ptr: [*]const u8, font_key_len: usize, text_ptr: [*]const u8, text_len: usize) u64;
 
     // Input
     extern fn wasm96_input_is_button_down(port: u32, btn: u32) u32;
@@ -129,6 +138,11 @@ pub const graphics = struct {
         sys.wasm96_graphics_image(x, y, w, h, data.ptr, data.len);
     }
 
+    /// Draw an image from raw PNG bytes.
+    pub fn imagePng(x: i32, y: i32, data: []const u8) void {
+        sys.wasm96_graphics_image_png(x, y, data.ptr, data.len);
+    }
+
     /// Draw a filled triangle.
     pub fn triangle(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32) void {
         sys.wasm96_graphics_triangle(x1, y1, x2, y2, x3, y3);
@@ -159,59 +173,84 @@ pub const graphics = struct {
         sys.wasm96_graphics_pill_outline(x, y, w, h);
     }
 
-    /// Create an SVG resource.
-    pub fn svgCreate(data: []const u8) u32 {
-        return sys.wasm96_graphics_svg_create(data.ptr, data.len);
+    /// Register an SVG resource under a string key.
+    pub fn svgRegister(key: []const u8, data: []const u8) bool {
+        return sys.wasm96_graphics_svg_register(key.ptr, key.len, data.ptr, data.len) != 0;
     }
 
-    /// Draw an SVG resource.
-    pub fn svgDraw(id: u32, x: i32, y: i32, w: u32, h: u32) void {
-        sys.wasm96_graphics_svg_draw(id, x, y, w, h);
+    /// Draw a registered SVG by key.
+    pub fn svgDrawKey(key: []const u8, x: i32, y: i32, w: u32, h: u32) void {
+        sys.wasm96_graphics_svg_draw_key(key.ptr, key.len, x, y, w, h);
     }
 
-    /// Destroy an SVG resource.
-    pub fn svgDestroy(id: u32) void {
-        sys.wasm96_graphics_svg_destroy(id);
+    /// Unregister an SVG by key.
+    pub fn svgUnregister(key: []const u8) void {
+        sys.wasm96_graphics_svg_unregister(key.ptr, key.len);
     }
 
-    /// Create a GIF resource.
-    pub fn gifCreate(data: []const u8) u32 {
-        return sys.wasm96_graphics_gif_create(data.ptr, data.len);
+    /// Register a GIF resource under a string key.
+    pub fn gifRegister(key: []const u8, data: []const u8) bool {
+        return sys.wasm96_graphics_gif_register(key.ptr, key.len, data.ptr, data.len) != 0;
     }
 
-    /// Draw a GIF resource at natural size.
-    pub fn gifDraw(id: u32, x: i32, y: i32) void {
-        sys.wasm96_graphics_gif_draw(id, x, y);
+    /// Draw a registered GIF by key at natural size.
+    pub fn gifDrawKey(key: []const u8, x: i32, y: i32) void {
+        sys.wasm96_graphics_gif_draw_key(key.ptr, key.len, x, y);
     }
 
-    /// Draw a GIF resource scaled.
-    pub fn gifDrawScaled(id: u32, x: i32, y: i32, w: u32, h: u32) void {
-        sys.wasm96_graphics_gif_draw_scaled(id, x, y, w, h);
+    /// Draw a registered GIF by key scaled.
+    pub fn gifDrawKeyScaled(key: []const u8, x: i32, y: i32, w: u32, h: u32) void {
+        sys.wasm96_graphics_gif_draw_key_scaled(key.ptr, key.len, x, y, w, h);
     }
 
-    /// Destroy a GIF resource.
-    pub fn gifDestroy(id: u32) void {
-        sys.wasm96_graphics_gif_destroy(id);
+    /// Unregister a GIF by key.
+    pub fn gifUnregister(key: []const u8) void {
+        sys.wasm96_graphics_gif_unregister(key.ptr, key.len);
     }
 
-    /// Upload a TTF font.
-    pub fn fontUploadTtf(data: []const u8) u32 {
-        return sys.wasm96_graphics_font_upload_ttf(data.ptr, data.len);
+    /// Register a PNG resource under a string key.
+    pub fn pngRegister(key: []const u8, data: []const u8) bool {
+        return sys.wasm96_graphics_png_register(key.ptr, key.len, data.ptr, data.len) != 0;
     }
 
-    /// Use a built-in Spleen font.
-    pub fn fontUseSpleen(size: u32) u32 {
-        return sys.wasm96_graphics_font_use_spleen(size);
+    /// Draw a registered PNG by key at natural size.
+    pub fn pngDrawKey(key: []const u8, x: i32, y: i32) void {
+        sys.wasm96_graphics_png_draw_key(key.ptr, key.len, x, y);
     }
 
-    /// Draw text.
-    pub fn text(x: i32, y: i32, font: u32, string: []const u8) void {
-        sys.wasm96_graphics_text(x, y, font, string.ptr, string.len);
+    /// Draw a registered PNG by key scaled.
+    pub fn pngDrawKeyScaled(key: []const u8, x: i32, y: i32, w: u32, h: u32) void {
+        sys.wasm96_graphics_png_draw_key_scaled(key.ptr, key.len, x, y, w, h);
     }
 
-    /// Measure text.
-    pub fn textMeasure(font: u32, str: []const u8) TextSize {
-        const result = sys.wasm96_graphics_text_measure(font, str.ptr, str.len);
+    /// Unregister a PNG by key.
+    pub fn pngUnregister(key: []const u8) void {
+        sys.wasm96_graphics_png_unregister(key.ptr, key.len);
+    }
+
+    /// Register a TTF font under a string key.
+    pub fn fontRegisterTtf(key: []const u8, data: []const u8) bool {
+        return sys.wasm96_graphics_font_register_ttf(key.ptr, key.len, data.ptr, data.len) != 0;
+    }
+
+    /// Register a built-in Spleen font under a string key.
+    pub fn fontRegisterSpleen(key: []const u8, size: u32) bool {
+        return sys.wasm96_graphics_font_register_spleen(key.ptr, key.len, size) != 0;
+    }
+
+    /// Unregister a font by key.
+    pub fn fontUnregister(key: []const u8) void {
+        sys.wasm96_graphics_font_unregister(key.ptr, key.len);
+    }
+
+    /// Draw text using a font referenced by key.
+    pub fn textKey(x: i32, y: i32, font_key: []const u8, string: []const u8) void {
+        sys.wasm96_graphics_text_key(x, y, font_key.ptr, font_key.len, string.ptr, string.len);
+    }
+
+    /// Measure text using a font referenced by key.
+    pub fn textMeasureKey(font_key: []const u8, str: []const u8) TextSize {
+        const result = sys.wasm96_graphics_text_measure_key(font_key.ptr, font_key.len, str.ptr, str.len);
         return TextSize{
             .width = @as(u32, @intCast(result >> 32)),
             .height = @as(u32, @intCast(result & 0xFFFFFFFF)),
