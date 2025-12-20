@@ -1,7 +1,6 @@
 // Needed for `alloc::` in this crate.
 extern crate alloc;
 
-
 // External crates for rendering
 use fontdue::Font;
 
@@ -11,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 // Storage ABI helpers
-use alloc::string::String;
 use alloc::vec::Vec;
 
 // Embedded Spleen font data
@@ -33,13 +31,11 @@ pub struct Resources {
     pub gifs: HashMap<u32, GifResource>,
     pub fonts: HashMap<u32, FontResource>,
 
-    // Keyed indirection (new): map string keys (bytes) -> ids in the above maps.
-    //
-    // We intentionally use owned `String` keys because guests pass UTF-8.
-    pub keyed_svgs: HashMap<String, u32>,
-    pub keyed_gifs: HashMap<String, u32>,
-    pub keyed_pngs: HashMap<String, PngResource>,
-    pub keyed_fonts: HashMap<String, u32>,
+    // Keyed indirection (new): map u64 keys (hashed strings) -> ids in the above maps.
+    pub keyed_svgs: HashMap<u64, u32>,
+    pub keyed_gifs: HashMap<u64, u32>,
+    pub keyed_pngs: HashMap<u64, PngResource>,
+    pub keyed_fonts: HashMap<u64, u32>,
 
     pub next_id: u32,
 }

@@ -9,7 +9,6 @@ use wasmtime::Caller;
 // External crates for asset decoding
 
 // Storage ABI helpers
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::AvError;
@@ -29,12 +28,6 @@ pub fn read_guest_bytes(
         .read(&*caller, ptr as usize, &mut data)
         .map_err(|_| AvError::MemoryReadFailed)?;
     Ok(data)
-}
-
-pub fn read_guest_utf8(caller: &mut Caller<'_, ()>, ptr: u32, len: u32) -> Result<String, AvError> {
-    let data = read_guest_bytes(caller, ptr, len)?;
-    let s = std::str::from_utf8(&data).map_err(|_| AvError::MemoryReadFailed)?;
-    Ok(s.to_string())
 }
 
 pub fn graphics_line_internal(x1: i32, y1: i32, x2: i32, y2: i32) {

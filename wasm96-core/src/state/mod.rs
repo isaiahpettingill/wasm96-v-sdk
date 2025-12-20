@@ -169,7 +169,7 @@ impl Default for AudioState {
 /// Keys and values are owned by the host.
 #[derive(Debug, Default)]
 pub struct StorageState {
-    pub kv: HashMap<String, Vec<u8>>,
+    pub kv: HashMap<u64, Vec<u8>>,
 }
 
 /// Minimal cached input state.

@@ -9,17 +9,9 @@ use wasmtime::Caller;
 // External crates for asset decoding
 
 // Storage ABI helpers
-use alloc::string::String;
-
 use super::utils::{guest_alloc, guest_free};
 
-pub fn storage_save(
-    env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
-    data_ptr: u32,
-    data_len: u32,
-) {
+pub fn storage_save(env: &mut Caller<'_, ()>, key: u64, data_ptr: u32, data_len: u32) {
     // Read guest memory pointers
     let memory_ptr = {
         let s = global().lock().unwrap();
@@ -31,18 +23,6 @@ pub fn storage_save(
 
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
-
-    let mut key_bytes = vec![0u8; key_len as usize];
-    if mem
-        .read(&mut *env, key_ptr as usize, &mut key_bytes)
-        .is_err()
-    {
-        return;
-    }
-    let key = match core::str::from_utf8(&key_bytes) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
 
     let mut data = vec![0u8; data_len as usize];
     if mem.read(&mut *env, data_ptr as usize, &mut data).is_err() {
@@ -50,10 +30,10 @@ pub fn storage_save(
     }
 
     let mut s = global().lock().unwrap();
-    s.storage.kv.insert(String::from(key), data);
+    s.storage.kv.insert(key, data);
 }
 
-pub fn storage_load(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) -> u64 {
+pub fn storage_load(env: &mut Caller<'_, ()>, key: u64) -> u64 {
     // Read guest memory pointers
     let memory_ptr = {
         let s = global().lock().unwrap();
@@ -66,21 +46,9 @@ pub fn storage_load(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) -> u64
     // SAFETY: memory pointer checked.
     let mem = unsafe { &*memory_ptr };
 
-    let mut key_bytes = vec![0u8; key_len as usize];
-    if mem
-        .read(&mut *env, key_ptr as usize, &mut key_bytes)
-        .is_err()
-    {
-        return 0;
-    }
-    let key = match core::str::from_utf8(&key_bytes) {
-        Ok(s) => s,
-        Err(_) => return 0,
-    };
-
     let data = {
         let s = global().lock().unwrap();
-        match s.storage.kv.get(key) {
+        match s.storage.kv.get(&key) {
             Some(v) => v.clone(),
             None => return 0,
         }

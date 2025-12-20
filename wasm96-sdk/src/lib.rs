@@ -74,94 +74,48 @@ pub mod sys {
         #[link_name = "wasm96_graphics_image_png"]
         pub fn graphics_image_png(x: i32, y: i32, ptr: u32, len: u32);
 
-        // --- Keyed resources (string keys) ---
+        // --- Keyed resources (hashed keys) ---
         // SVG
         #[link_name = "wasm96_graphics_svg_register"]
-        pub fn graphics_svg_register(
-            key_ptr: u32,
-            key_len: u32,
-            data_ptr: u32,
-            data_len: u32,
-        ) -> u32;
+        pub fn graphics_svg_register(key: u64, data_ptr: u32, data_len: u32) -> u32;
         #[link_name = "wasm96_graphics_svg_draw_key"]
-        pub fn graphics_svg_draw_key(key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32);
+        pub fn graphics_svg_draw_key(key: u64, x: i32, y: i32, w: u32, h: u32);
         #[link_name = "wasm96_graphics_svg_unregister"]
-        pub fn graphics_svg_unregister(key_ptr: u32, key_len: u32);
+        pub fn graphics_svg_unregister(key: u64);
 
         // GIF
         #[link_name = "wasm96_graphics_gif_register"]
-        pub fn graphics_gif_register(
-            key_ptr: u32,
-            key_len: u32,
-            data_ptr: u32,
-            data_len: u32,
-        ) -> u32;
+        pub fn graphics_gif_register(key: u64, data_ptr: u32, data_len: u32) -> u32;
         #[link_name = "wasm96_graphics_gif_draw_key"]
-        pub fn graphics_gif_draw_key(key_ptr: u32, key_len: u32, x: i32, y: i32);
+        pub fn graphics_gif_draw_key(key: u64, x: i32, y: i32);
         #[link_name = "wasm96_graphics_gif_draw_key_scaled"]
-        pub fn graphics_gif_draw_key_scaled(
-            key_ptr: u32,
-            key_len: u32,
-            x: i32,
-            y: i32,
-            w: u32,
-            h: u32,
-        );
+        pub fn graphics_gif_draw_key_scaled(key: u64, x: i32, y: i32, w: u32, h: u32);
         #[link_name = "wasm96_graphics_gif_unregister"]
-        pub fn graphics_gif_unregister(key_ptr: u32, key_len: u32);
+        pub fn graphics_gif_unregister(key: u64);
 
         // PNG
         #[link_name = "wasm96_graphics_png_register"]
-        pub fn graphics_png_register(
-            key_ptr: u32,
-            key_len: u32,
-            data_ptr: u32,
-            data_len: u32,
-        ) -> u32;
+        pub fn graphics_png_register(key: u64, data_ptr: u32, data_len: u32) -> u32;
         #[link_name = "wasm96_graphics_png_draw_key"]
-        pub fn graphics_png_draw_key(key_ptr: u32, key_len: u32, x: i32, y: i32);
+        pub fn graphics_png_draw_key(key: u64, x: i32, y: i32);
         #[link_name = "wasm96_graphics_png_draw_key_scaled"]
-        pub fn graphics_png_draw_key_scaled(
-            key_ptr: u32,
-            key_len: u32,
-            x: i32,
-            y: i32,
-            w: u32,
-            h: u32,
-        );
+        pub fn graphics_png_draw_key_scaled(key: u64, x: i32, y: i32, w: u32, h: u32);
         #[link_name = "wasm96_graphics_png_unregister"]
-        pub fn graphics_png_unregister(key_ptr: u32, key_len: u32);
+        pub fn graphics_png_unregister(key: u64);
 
         // Fonts + text (keyed by string)
         #[link_name = "wasm96_graphics_font_register_ttf"]
-        pub fn graphics_font_register_ttf(
-            key_ptr: u32,
-            key_len: u32,
-            data_ptr: u32,
-            data_len: u32,
-        ) -> u32;
+        pub fn graphics_font_register_ttf(key: u64, data_ptr: u32, data_len: u32) -> u32;
         #[link_name = "wasm96_graphics_font_register_spleen"]
-        pub fn graphics_font_register_spleen(key_ptr: u32, key_len: u32, size: u32) -> u32;
+        pub fn graphics_font_register_spleen(key: u64, size: u32) -> u32;
         #[link_name = "wasm96_graphics_font_unregister"]
-        pub fn graphics_font_unregister(key_ptr: u32, key_len: u32);
+        pub fn graphics_font_unregister(key: u64);
 
         #[link_name = "wasm96_graphics_text_key"]
-        pub fn graphics_text_key(
-            x: i32,
-            y: i32,
-            font_key_ptr: u32,
-            font_key_len: u32,
-            text_ptr: u32,
-            text_len: u32,
-        );
+        pub fn graphics_text_key(x: i32, y: i32, font_key: u64, text_ptr: u32, text_len: u32);
 
         #[link_name = "wasm96_graphics_text_measure_key"]
-        pub fn graphics_text_measure_key(
-            font_key_ptr: u32,
-            font_key_len: u32,
-            text_ptr: u32,
-            text_len: u32,
-        ) -> u64;
+        pub fn graphics_text_measure_key(font_key: u64, text_ptr: u32, text_len: u32) -> u64;
 
         #[link_name = "wasm96_graphics_triangle"]
         pub fn graphics_triangle(x1: i32, y1: i32, x2: i32, y2: i32, x3: i32, y3: i32);
@@ -239,6 +193,15 @@ pub mod graphics {
     use super::sys;
     use crate::TextSize;
 
+    fn hash_key(key: &str) -> u64 {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in key.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
     /// Set the screen dimensions.
     pub fn set_size(width: u32, height: u32) {
         unsafe { sys::graphics_set_size(width, height) }
@@ -296,33 +259,31 @@ pub mod graphics {
     }
 
     /// Register an encoded PNG (bytes) with the host under a string key.
+    /// Register a GIF resource (encoded bytes) under a string key.
     /// Returns true on success.
-    pub fn png_register(key: &str, png_bytes: &[u8]) -> bool {
+    pub fn gif_register(key: &str, gif_bytes: &[u8]) -> bool {
         unsafe {
-            sys::graphics_png_register(
-                key.as_ptr() as u32,
-                key.len() as u32,
-                png_bytes.as_ptr() as u32,
-                png_bytes.len() as u32,
+            sys::graphics_gif_register(
+                hash_key(key),
+                gif_bytes.as_ptr() as u32,
+                gif_bytes.len() as u32,
             ) != 0
         }
     }
 
-    /// Draw a registered PNG at natural size (by key).
-    pub fn png_draw_key(key: &str, x: i32, y: i32) {
-        unsafe { sys::graphics_png_draw_key(key.as_ptr() as u32, key.len() as u32, x, y) }
+    /// Draw a registered GIF by key at natural size.
+    pub fn gif_draw_key(key: &str, x: i32, y: i32) {
+        unsafe { sys::graphics_gif_draw_key(hash_key(key), x, y) }
     }
 
-    /// Draw a registered PNG scaled (by key).
-    pub fn png_draw_key_scaled(key: &str, x: i32, y: i32, w: u32, h: u32) {
-        unsafe {
-            sys::graphics_png_draw_key_scaled(key.as_ptr() as u32, key.len() as u32, x, y, w, h)
-        }
+    /// Draw a registered GIF by key scaled.
+    pub fn gif_draw_key_scaled(key: &str, x: i32, y: i32, w: u32, h: u32) {
+        unsafe { sys::graphics_gif_draw_key_scaled(hash_key(key), x, y, w, h) }
     }
 
-    /// Unregister a PNG resource key.
-    pub fn png_unregister(key: &str) {
-        unsafe { sys::graphics_png_unregister(key.as_ptr() as u32, key.len() as u32) }
+    /// Unregister a GIF by key.
+    pub fn gif_unregister(key: &str) {
+        unsafe { sys::graphics_gif_unregister(hash_key(key)) }
     }
 
     /// Draw a filled triangle.
@@ -370,107 +331,97 @@ pub mod graphics {
     pub fn svg_register(key: &str, svg_bytes: &[u8]) -> bool {
         unsafe {
             sys::graphics_svg_register(
-                key.as_ptr() as u32,
-                key.len() as u32,
+                hash_key(key),
                 svg_bytes.as_ptr() as u32,
                 svg_bytes.len() as u32,
             ) != 0
         }
     }
 
-    /// Draw a registered SVG by key.
+    /// Draw a keyed SVG.
     pub fn svg_draw_key(key: &str, x: i32, y: i32, w: u32, h: u32) {
-        unsafe { sys::graphics_svg_draw_key(key.as_ptr() as u32, key.len() as u32, x, y, w, h) }
+        unsafe { sys::graphics_svg_draw_key(hash_key(key), x, y, w, h) }
     }
 
-    /// Unregister an SVG by key.
+    /// Unregister a keyed SVG.
     pub fn svg_unregister(key: &str) {
-        unsafe { sys::graphics_svg_unregister(key.as_ptr() as u32, key.len() as u32) }
+        unsafe { sys::graphics_svg_unregister(hash_key(key)) }
     }
 
-    /// Register a GIF resource (encoded bytes) under a string key.
+    /// Register a PNG resource (encoded bytes) under a string key.
     /// Returns true on success.
-    pub fn gif_register(key: &str, gif_bytes: &[u8]) -> bool {
+    pub fn png_register(key: &str, png_bytes: &[u8]) -> bool {
         unsafe {
-            sys::graphics_gif_register(
-                key.as_ptr() as u32,
-                key.len() as u32,
-                gif_bytes.as_ptr() as u32,
-                gif_bytes.len() as u32,
+            sys::graphics_png_register(
+                hash_key(key),
+                png_bytes.as_ptr() as u32,
+                png_bytes.len() as u32,
             ) != 0
         }
     }
 
-    /// Draw a registered GIF by key at natural size.
-    pub fn gif_draw_key(key: &str, x: i32, y: i32) {
-        unsafe { sys::graphics_gif_draw_key(key.as_ptr() as u32, key.len() as u32, x, y) }
+    /// Draw a registered PNG by key at natural size.
+    pub fn png_draw_key(key: &str, x: i32, y: i32) {
+        unsafe { sys::graphics_png_draw_key(hash_key(key), x, y) }
     }
 
-    /// Draw a registered GIF by key scaled.
-    pub fn gif_draw_key_scaled(key: &str, x: i32, y: i32, w: u32, h: u32) {
+    /// Draw a registered PNG by key scaled.
+    pub fn png_draw_key_scaled(key: &str, x: i32, y: i32, w: u32, h: u32) {
+        unsafe { sys::graphics_png_draw_key_scaled(hash_key(key), x, y, w, h) }
+    }
+
+    /// Unregister a PNG by key.
+    pub fn png_unregister(key: &str) {
+        unsafe { sys::graphics_png_unregister(hash_key(key)) }
+    }
+
+    /// Register a TTF font under a string key.
+    ///
+    /// Returns `true` if successful.
+    pub fn font_register_ttf(key: &str, data: &[u8]) -> bool {
         unsafe {
-            sys::graphics_gif_draw_key_scaled(key.as_ptr() as u32, key.len() as u32, x, y, w, h)
+            sys::graphics_font_register_ttf(hash_key(key), data.as_ptr() as u32, data.len() as u32)
+                != 0
         }
     }
 
-    /// Unregister a GIF by key.
-    pub fn gif_unregister(key: &str) {
-        unsafe { sys::graphics_gif_unregister(key.as_ptr() as u32, key.len() as u32) }
-    }
-
-    /// Register a TTF font (bytes) under a string key.
-    /// Returns true on success.
-    pub fn font_register_ttf(key: &str, ttf_bytes: &[u8]) -> bool {
-        unsafe {
-            sys::graphics_font_register_ttf(
-                key.as_ptr() as u32,
-                key.len() as u32,
-                ttf_bytes.as_ptr() as u32,
-                ttf_bytes.len() as u32,
-            ) != 0
-        }
-    }
-
-    /// Register a built-in Spleen font under a string key, by point size.
-    /// Returns true on success.
+    /// Register the built-in Spleen font under a string key.
+    ///
+    /// Returns `true` if successful.
     pub fn font_register_spleen(key: &str, size: u32) -> bool {
-        unsafe {
-            sys::graphics_font_register_spleen(key.as_ptr() as u32, key.len() as u32, size) != 0
-        }
+        unsafe { sys::graphics_font_register_spleen(hash_key(key), size) != 0 }
     }
 
-    /// Unregister a font by key.
+    /// Unregister a font.
     pub fn font_unregister(key: &str) {
-        unsafe { sys::graphics_font_unregister(key.as_ptr() as u32, key.len() as u32) }
+        unsafe { sys::graphics_font_unregister(hash_key(key)) }
     }
 
-    /// Draw text using a font referenced by key.
+    /// Draw text using a registered font.
     pub fn text_key(x: i32, y: i32, font_key: &str, text: &str) {
         unsafe {
             sys::graphics_text_key(
                 x,
                 y,
-                font_key.as_ptr() as u32,
-                font_key.len() as u32,
+                hash_key(font_key),
                 text.as_ptr() as u32,
                 text.len() as u32,
             )
         }
     }
 
-    /// Measure text using a font referenced by key.
+    /// Measure text using a registered font.
     pub fn text_measure_key(font_key: &str, text: &str) -> TextSize {
         let packed = unsafe {
             sys::graphics_text_measure_key(
-                font_key.as_ptr() as u32,
-                font_key.len() as u32,
+                hash_key(font_key),
                 text.as_ptr() as u32,
                 text.len() as u32,
             )
         };
         TextSize {
             width: (packed >> 32) as u32,
-            height: (packed & 0xFFFFFFFF) as u32,
+            height: packed as u32,
         }
     }
 }

@@ -107,103 +107,88 @@ pub fn define_imports(linker: &mut Linker<()>) -> Result<(), anyhow::Error> {
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_SVG_REGISTER,
-        |mut caller: Caller<'_, ()>,
-         key_ptr: u32,
-         key_len: u32,
-         data_ptr: u32,
-         data_len: u32|
-         -> u32 {
-            av::graphics_svg_register(&mut caller, key_ptr, key_len, data_ptr, data_len)
+        |mut caller: Caller<'_, ()>, key: u64, data_ptr: u32, data_len: u32| -> u32 {
+            av::graphics_svg_register(&mut caller, key, data_ptr, data_len)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_SVG_DRAW_KEY,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32| {
-            av::graphics_svg_draw_key(&mut caller, key_ptr, key_len, x, y, w, h)
+        |_caller: Caller<'_, ()>, key: u64, x: i32, y: i32, w: u32, h: u32| {
+            av::graphics_svg_draw_key(key, x, y, w, h)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_SVG_UNREGISTER,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32| {
-            av::graphics_svg_unregister(&mut caller, key_ptr, key_len);
+        |_caller: Caller<'_, ()>, key: u64| {
+            av::graphics_svg_unregister(key);
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_GIF_REGISTER,
-        |mut caller: Caller<'_, ()>,
-         key_ptr: u32,
-         key_len: u32,
-         data_ptr: u32,
-         data_len: u32|
-         -> u32 {
-            av::graphics_gif_register(&mut caller, key_ptr, key_len, data_ptr, data_len)
+        |mut caller: Caller<'_, ()>, key: u64, data_ptr: u32, data_len: u32| -> u32 {
+            av::graphics_gif_register(&mut caller, key, data_ptr, data_len)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_GIF_DRAW_KEY,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32| {
-            av::graphics_gif_draw_key(&mut caller, key_ptr, key_len, x, y);
+        |_caller: Caller<'_, ()>, key: u64, x: i32, y: i32| {
+            av::graphics_gif_draw_key(key, x, y);
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_GIF_DRAW_KEY_SCALED,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32| {
-            av::graphics_gif_draw_key_scaled(&mut caller, key_ptr, key_len, x, y, w, h)
+        |_caller: Caller<'_, ()>, key: u64, x: i32, y: i32, w: u32, h: u32| {
+            av::graphics_gif_draw_key_scaled(key, x, y, w, h)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_GIF_UNREGISTER,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32| {
-            av::graphics_gif_unregister(&mut caller, key_ptr, key_len);
+        |_caller: Caller<'_, ()>, key: u64| {
+            av::graphics_gif_unregister(key);
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_PNG_REGISTER,
-        |mut caller: Caller<'_, ()>,
-         key_ptr: u32,
-         key_len: u32,
-         data_ptr: u32,
-         data_len: u32|
-         -> u32 {
-            av::graphics_png_register(&mut caller, key_ptr, key_len, data_ptr, data_len)
+        |mut caller: Caller<'_, ()>, key: u64, data_ptr: u32, data_len: u32| -> u32 {
+            av::graphics_png_register(&mut caller, key, data_ptr, data_len)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_PNG_DRAW_KEY,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32| {
-            av::graphics_png_draw_key(&mut caller, key_ptr, key_len, x, y);
+        |_caller: Caller<'_, ()>, key: u64, x: i32, y: i32| {
+            av::graphics_png_draw_key(key, x, y);
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_PNG_DRAW_KEY_SCALED,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32| {
-            av::graphics_png_draw_key_scaled(&mut caller, key_ptr, key_len, x, y, w, h)
+        |_caller: Caller<'_, ()>, key: u64, x: i32, y: i32, w: u32, h: u32| {
+            av::graphics_png_draw_key_scaled(key, x, y, w, h)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_PNG_UNREGISTER,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32| {
-            av::graphics_png_unregister(&mut caller, key_ptr, key_len);
+        |_caller: Caller<'_, ()>, key: u64| {
+            av::graphics_png_unregister(key);
         },
     )?;
 
@@ -211,29 +196,24 @@ pub fn define_imports(linker: &mut Linker<()>) -> Result<(), anyhow::Error> {
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_FONT_REGISTER_TTF,
-        |mut caller: Caller<'_, ()>,
-         key_ptr: u32,
-         key_len: u32,
-         data_ptr: u32,
-         data_len: u32|
-         -> u32 {
-            av::graphics_font_register_ttf(&mut caller, key_ptr, key_len, data_ptr, data_len)
+        |mut caller: Caller<'_, ()>, key: u64, data_ptr: u32, data_len: u32| -> u32 {
+            av::graphics_font_register_ttf(&mut caller, key, data_ptr, data_len)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_FONT_REGISTER_SPLEEN,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32, size: u32| -> u32 {
-            av::graphics_font_register_spleen(&mut caller, key_ptr, key_len, size)
+        |_caller: Caller<'_, ()>, key: u64, size: u32| -> u32 {
+            av::graphics_font_register_spleen(key, size)
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_FONT_UNREGISTER,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32| {
-            av::graphics_font_unregister(&mut caller, key_ptr, key_len);
+        |_caller: Caller<'_, ()>, key: u64| {
+            av::graphics_font_unregister(key);
         },
     )?;
 
@@ -243,38 +223,18 @@ pub fn define_imports(linker: &mut Linker<()>) -> Result<(), anyhow::Error> {
         |mut caller: Caller<'_, ()>,
          x: i32,
          y: i32,
-         font_key_ptr: u32,
-         font_key_len: u32,
+         font_key: u64,
          text_ptr: u32,
          text_len: u32| {
-            av::graphics_text_key(
-                x,
-                y,
-                &mut caller,
-                font_key_ptr,
-                font_key_len,
-                text_ptr,
-                text_len,
-            );
+            av::graphics_text_key(x, y, &mut caller, font_key, text_ptr, text_len);
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::GRAPHICS_TEXT_MEASURE_KEY,
-        |mut caller: Caller<'_, ()>,
-         font_key_ptr: u32,
-         font_key_len: u32,
-         text_ptr: u32,
-         text_len: u32|
-         -> u64 {
-            av::graphics_text_measure_key(
-                &mut caller,
-                font_key_ptr,
-                font_key_len,
-                text_ptr,
-                text_len,
-            )
+        |mut caller: Caller<'_, ()>, font_key: u64, text_ptr: u32, text_len: u32| -> u64 {
+            av::graphics_text_measure_key(&mut caller, font_key, text_ptr, text_len)
         },
     )?;
 
@@ -454,17 +414,15 @@ pub fn define_imports(linker: &mut Linker<()>) -> Result<(), anyhow::Error> {
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::STORAGE_SAVE,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32| {
-            av::storage_save(&mut caller, key_ptr, key_len, data_ptr, data_len);
+        |mut caller: Caller<'_, ()>, key: u64, data_ptr: u32, data_len: u32| {
+            av::storage_save(&mut caller, key, data_ptr, data_len);
         },
     )?;
 
     linker.func_wrap(
         IMPORT_MODULE,
         host_imports::STORAGE_LOAD,
-        |mut caller: Caller<'_, ()>, key_ptr: u32, key_len: u32| -> u64 {
-            av::storage_load(&mut caller, key_ptr, key_len)
-        },
+        |mut caller: Caller<'_, ()>, key: u64| -> u64 { av::storage_load(&mut caller, key) },
     )?;
 
     linker.func_wrap(

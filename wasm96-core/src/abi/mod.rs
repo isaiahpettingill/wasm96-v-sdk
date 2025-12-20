@@ -27,26 +27,26 @@
 //! - `wasm96_graphics_image_png(x: i32, y: i32, ptr: u32, len: u32)`
 //!
 //! Keyed resources (no numeric ids required in the guest):
-//! - `wasm96_graphics_svg_register(key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32) -> u32` (bool)
-//! - `wasm96_graphics_svg_draw_key(key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32)`
-//! - `wasm96_graphics_svg_unregister(key_ptr: u32, key_len: u32)`
+//! - `wasm96_graphics_svg_register(key: u64, data_ptr: u32, data_len: u32) -> u32` (bool)
+//! - `wasm96_graphics_svg_draw_key(key: u64, x: i32, y: i32, w: u32, h: u32)`
+//! - `wasm96_graphics_svg_unregister(key: u64)`
 //!
-//! - `wasm96_graphics_gif_register(key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32) -> u32` (bool)
-//! - `wasm96_graphics_gif_draw_key(key_ptr: u32, key_len: u32, x: i32, y: i32)`
-//! - `wasm96_graphics_gif_draw_key_scaled(key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32)`
-//! - `wasm96_graphics_gif_unregister(key_ptr: u32, key_len: u32)`
+//! - `wasm96_graphics_gif_register(key: u64, data_ptr: u32, data_len: u32) -> u32` (bool)
+//! - `wasm96_graphics_gif_draw_key(key: u64, x: i32, y: i32)`
+//! - `wasm96_graphics_gif_draw_key_scaled(key: u64, x: i32, y: i32, w: u32, h: u32)`
+//! - `wasm96_graphics_gif_unregister(key: u64)`
 //!
-//! - `wasm96_graphics_png_register(key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32) -> u32` (bool)
-//! - `wasm96_graphics_png_draw_key(key_ptr: u32, key_len: u32, x: i32, y: i32)`
-//! - `wasm96_graphics_png_draw_key_scaled(key_ptr: u32, key_len: u32, x: i32, y: i32, w: u32, h: u32)`
-//! - `wasm96_graphics_png_unregister(key_ptr: u32, key_len: u32)`
+//! - `wasm96_graphics_png_register(key: u64, data_ptr: u32, data_len: u32) -> u32` (bool)
+//! - `wasm96_graphics_png_draw_key(key: u64, x: i32, y: i32)`
+//! - `wasm96_graphics_png_draw_key_scaled(key: u64, x: i32, y: i32, w: u32, h: u32)`
+//! - `wasm96_graphics_png_unregister(key: u64)`
 //!
 //! Fonts (keyed; special key `"spleen"` refers to the built-in Spleen font):
-//! - `wasm96_graphics_font_register_ttf(key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32) -> u32` (bool)
-//! - `wasm96_graphics_font_register_spleen(key_ptr: u32, key_len: u32, size: u32) -> u32` (bool)
-//! - `wasm96_graphics_font_unregister(key_ptr: u32, key_len: u32)`
-//! - `wasm96_graphics_text_key(x: i32, y: i32, font_key_ptr: u32, font_key_len: u32, text_ptr: u32, text_len: u32)`
-//! - `wasm96_graphics_text_measure_key(font_key_ptr: u32, font_key_len: u32, text_ptr: u32, text_len: u32) -> u64`
+//! - `wasm96_graphics_font_register_ttf(key: u64, data_ptr: u32, data_len: u32) -> u32` (bool)
+//! - `wasm96_graphics_font_register_spleen(key: u64, size: u32) -> u32` (bool)
+//! - `wasm96_graphics_font_unregister(key: u64)`
+//! - `wasm96_graphics_text_key(x: i32, y: i32, font_key: u64, text_ptr: u32, text_len: u32)`
+//! - `wasm96_graphics_text_measure_key(font_key: u64, text_ptr: u32, text_len: u32) -> u64`
 //!
 //! ### Input
 //! - `wasm96_input_is_button_down(port: u32, btn: u32) -> u32` (bool)
@@ -65,8 +65,8 @@
 //! - `wasm96_audio_play_xm(ptr: u32, len: u32)`
 //!
 //! ### Storage
-//! - `wasm96_storage_save(key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32)`
-//! - `wasm96_storage_load(key_ptr: u32, key_len: u32) -> u64`
+//! - `wasm96_storage_save(key: u64, data_ptr: u32, data_len: u32)`
+//! - `wasm96_storage_load(key: u64) -> u64`
 //!   - returns (ptr<<32)|len in guest memory; ptr=0,len=0 means “missing”
 //! - `wasm96_storage_free(ptr: u32, len: u32)`
 //!

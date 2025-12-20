@@ -17,8 +17,7 @@ use alloc::vec::Vec;
 
 use super::resources::{AvError, FontResource, GifResource, PngResource, RESOURCES};
 use super::utils::{
-    graphics_image_from_host, graphics_line_internal, read_guest_bytes, read_guest_utf8,
-    system_millis, tri_edge,
+    graphics_image_from_host, graphics_line_internal, read_guest_bytes, system_millis, tri_edge,
 };
 
 /// Set the screen dimensions. Resizes the host framebuffer.
@@ -381,16 +380,10 @@ fn decode_png_to_rgba(png_bytes: &[u8]) -> Option<PngResource> {
 /// Register a PNG under a string key (bytes are encoded PNG).
 pub fn graphics_png_register(
     env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
+    key: u64,
     data_ptr: u32,
     data_len: u32,
 ) -> u32 {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return 0,
-    };
-
     let png_bytes = match read_guest_bytes(env, data_ptr, data_len) {
         Ok(b) => b,
         Err(_) => return 0,
@@ -407,12 +400,7 @@ pub fn graphics_png_register(
 }
 
 /// Draw a keyed PNG at natural size.
-pub fn graphics_png_draw_key(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_png_draw_key(key: u64, x: i32, y: i32) {
     let png = {
         let res = RESOURCES.lock().unwrap();
         res.keyed_pngs.get(&key).cloned()
@@ -424,20 +412,7 @@ pub fn graphics_png_draw_key(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u3
 }
 
 /// Draw a keyed PNG scaled (nearest-neighbor).
-pub fn graphics_png_draw_key_scaled(
-    env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_png_draw_key_scaled(key: u64, x: i32, y: i32, w: u32, h: u32) {
     let png = {
         let res = RESOURCES.lock().unwrap();
         res.keyed_pngs.get(&key).cloned()
@@ -483,12 +458,7 @@ pub fn graphics_png_draw_key_scaled(
 }
 
 /// Unregister a keyed PNG.
-pub fn graphics_png_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_png_unregister(key: u64) {
     let mut res = RESOURCES.lock().unwrap();
     res.keyed_pngs.remove(&key);
 }
@@ -654,16 +624,10 @@ pub fn graphics_pill_outline(x: i32, y: i32, w: u32, h: u32) {
 /// Register SVG resource under a string key.
 pub fn graphics_svg_register(
     caller: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
+    key: u64,
     data_ptr: u32,
     data_len: u32,
 ) -> u32 {
-    let key = match read_guest_utf8(caller, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return 0,
-    };
-
     let data = match read_guest_bytes(caller, data_ptr, data_len) {
         Ok(d) => d,
         Err(_) => return 0,
@@ -689,20 +653,7 @@ pub fn graphics_svg_register(
 }
 
 /// Draw keyed SVG.
-pub fn graphics_svg_draw_key(
-    env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_svg_draw_key(key: u64, x: i32, y: i32, w: u32, h: u32) {
     let id = {
         let res = RESOURCES.lock().unwrap();
         res.keyed_svgs.get(&key).copied()
@@ -714,12 +665,7 @@ pub fn graphics_svg_draw_key(
 }
 
 /// Unregister keyed SVG and free the underlying resource.
-pub fn graphics_svg_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_svg_unregister(key: u64) {
     let id = {
         let mut res = RESOURCES.lock().unwrap();
         res.keyed_svgs.remove(&key)
@@ -736,7 +682,12 @@ pub fn graphics_svg_draw(id: u32, x: i32, y: i32, w: u32, h: u32) {
     if let Some(tree) = res.svgs.get(&id) {
         let pixmap_size = tiny_skia::IntSize::from_wh(w, h).unwrap();
         let mut pixmap = tiny_skia::Pixmap::new(pixmap_size.width(), pixmap_size.height()).unwrap();
-        resvg::render(tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+        let sx = w as f32 / tree.size().width();
+        let sy = h as f32 / tree.size().height();
+        let transform = tiny_skia::Transform::from_scale(sx, sy);
+
+        resvg::render(tree, transform, &mut pixmap.as_mut());
         // Now draw pixmap as image
         let rgba_data: Vec<u8> = pixmap
             .data()
@@ -766,58 +717,147 @@ pub fn graphics_gif_create(env: &mut Caller<'_, ()>, ptr: u32, len: u32) -> u32 
         Err(_) => return 0,
     };
 
-    // Snapshot the global palette once up-front to avoid borrowing `decoder` inside
-    // the frame loop (which already holds a mutable borrow for `read_next_frame`).
+    let width = decoder.width();
+    let height = decoder.height();
     let global_palette: Option<Vec<u8>> = decoder.global_palette().map(|p| p.to_vec());
 
     let mut frames = Vec::new();
     let mut delays = Vec::new();
-    let mut width = 0;
-    let mut height = 0;
+
+    // Canvas for composition (RGBA)
+    let mut canvas = vec![0u8; width as usize * height as usize * 4];
+    // Backup for "Restore to Previous" disposal
+    let mut previous_canvas = canvas.clone();
+
+    let mut last_disposal = gif::DisposalMethod::Any;
+    let mut last_rect = (0u16, 0u16, 0u16, 0u16); // left, top, width, height
 
     while let Some(frame) = match decoder.read_next_frame() {
         Ok(f) => f,
         Err(_) => return 0,
     } {
-        width = frame.width;
-        height = frame.height;
-
-        // NOTE:
-        // `gif` frames are typically *indexed* color, not raw RGB triplets.
-        // `frame.buffer` contains palette indices.
-        // Use the frame-local palette if present, otherwise the global palette.
-        let palette: Option<&[u8]> = frame.palette.as_deref().or(global_palette.as_deref());
-
-        let Some(palette) = palette else {
-            // No palette available -> can't expand indices to RGBA.
-            return 0;
-        };
-
-        // Expand indices into RGBA. The palette is packed RGBRGB...
-        // Transparency index (if present) maps to alpha=0.
-        let transparent_idx = frame.transparent;
-
-        let mut rgba = Vec::with_capacity(frame.buffer.len() * 4);
-        for &idx in frame.buffer.iter() {
-            if Some(idx) == transparent_idx {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-                continue;
+        // 1. Handle disposal of the *previous* frame
+        match last_disposal {
+            gif::DisposalMethod::Any | gif::DisposalMethod::Keep => {
+                // Do nothing, draw on top
             }
-
-            let base = (idx as usize) * 3;
-            if base + 2 >= palette.len() {
-                // Malformed index/palette; treat as transparent.
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-                continue;
+            gif::DisposalMethod::Background => {
+                // Restore background (transparent) for the area of the previous frame
+                let (lx, ly, lw, lh) = last_rect;
+                for y in ly..(ly + lh) {
+                    if y >= height {
+                        break;
+                    }
+                    for x in lx..(lx + lw) {
+                        if x >= width {
+                            break;
+                        }
+                        let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+                        if idx + 3 < canvas.len() {
+                            canvas[idx] = 0;
+                            canvas[idx + 1] = 0;
+                            canvas[idx + 2] = 0;
+                            canvas[idx + 3] = 0;
+                        }
+                    }
+                }
             }
-
-            let r = palette[base];
-            let g = palette[base + 1];
-            let b = palette[base + 2];
-            rgba.extend_from_slice(&[r, g, b, 255]);
+            gif::DisposalMethod::Previous => {
+                // Restore to state before previous frame
+                canvas = previous_canvas.clone();
+            }
         }
 
-        frames.push(rgba);
+        // Save state if *current* frame says "Restore to Previous" (for the next iteration)
+        if frame.dispose == gif::DisposalMethod::Previous {
+            previous_canvas = canvas.clone();
+        }
+
+        last_disposal = frame.dispose;
+        last_rect = (frame.left, frame.top, frame.width, frame.height);
+
+        // 2. Draw current frame onto canvas
+        let palette: Option<&[u8]> = frame.palette.as_deref().or(global_palette.as_deref());
+        if let Some(palette) = palette {
+            let transparent_idx = frame.transparent;
+            let fw = frame.width as usize;
+            let fh = frame.height as usize;
+            let fl = frame.left as usize;
+            let ft = frame.top as usize;
+
+            // Helper to write a pixel
+            let mut put_pixel = |x: usize, y: usize, color_idx: u8| {
+                if Some(color_idx) == transparent_idx {
+                    return;
+                }
+                let base = (color_idx as usize) * 3;
+                if base + 2 >= palette.len() {
+                    return;
+                }
+                let r = palette[base];
+                let g = palette[base + 1];
+                let b = palette[base + 2];
+
+                let cx = fl + x;
+                let cy = ft + y;
+                if cx < width as usize && cy < height as usize {
+                    let idx = (cy * (width as usize) + cx) * 4;
+                    canvas[idx] = r;
+                    canvas[idx + 1] = g;
+                    canvas[idx + 2] = b;
+                    canvas[idx + 3] = 255;
+                }
+            };
+
+            if frame.interlaced {
+                let mut offset = 0;
+                // Pass 1: Every 8th row, starting at 0
+                for y in (0..fh).step_by(8) {
+                    for x in 0..fw {
+                        if offset < frame.buffer.len() {
+                            put_pixel(x, y, frame.buffer[offset]);
+                            offset += 1;
+                        }
+                    }
+                }
+                // Pass 2: Every 8th row, starting at 4
+                for y in (4..fh).step_by(8) {
+                    for x in 0..fw {
+                        if offset < frame.buffer.len() {
+                            put_pixel(x, y, frame.buffer[offset]);
+                            offset += 1;
+                        }
+                    }
+                }
+                // Pass 3: Every 4th row, starting at 2
+                for y in (2..fh).step_by(4) {
+                    for x in 0..fw {
+                        if offset < frame.buffer.len() {
+                            put_pixel(x, y, frame.buffer[offset]);
+                            offset += 1;
+                        }
+                    }
+                }
+                // Pass 4: Every 2nd row, starting at 1
+                for y in (1..fh).step_by(2) {
+                    for x in 0..fw {
+                        if offset < frame.buffer.len() {
+                            put_pixel(x, y, frame.buffer[offset]);
+                            offset += 1;
+                        }
+                    }
+                }
+            } else {
+                // Normal
+                for (i, &idx) in frame.buffer.iter().enumerate() {
+                    let x = i % fw;
+                    let y = i / fw;
+                    put_pixel(x, y, idx);
+                }
+            }
+        }
+
+        frames.push(canvas.clone());
         delays.push(frame.delay);
     }
 
@@ -846,12 +886,22 @@ pub fn graphics_gif_draw_scaled(id: u32, x: i32, y: i32, w: u32, h: u32) {
     let res = RESOURCES.lock().unwrap();
     if let Some(gif) = res.gifs.get(&id) {
         let millis = system_millis();
-        let total_delay = gif.delays.iter().sum::<u16>() as u64 * 10; // 10ms per unit
-        let frame_idx = if total_delay > 0 {
-            ((millis % total_delay) / 10) as usize % gif.frames.len()
-        } else {
-            0
-        };
+        let total_delay_ms: u64 = gif.delays.iter().map(|&d| d as u64 * 10).sum();
+
+        let mut frame_idx = 0;
+        if total_delay_ms > 0 {
+            let mut rem = millis % total_delay_ms;
+            for (i, &d) in gif.delays.iter().enumerate() {
+                let d_ms = d as u64 * 10;
+                // Treat 0 delay as 100ms (common GIF viewer behavior)
+                let effective_delay = if d_ms == 0 { 100 } else { d_ms };
+                if rem < effective_delay {
+                    frame_idx = i;
+                    break;
+                }
+                rem = rem.saturating_sub(effective_delay);
+            }
+        }
 
         let src_rgba = &gif.frames[frame_idx];
         let src_w = gif.width as u32;
@@ -902,16 +952,10 @@ pub fn graphics_gif_destroy(id: u32) {
 /// Register GIF resource under a string key.
 pub fn graphics_gif_register(
     env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
+    key: u64,
     data_ptr: u32,
     data_len: u32,
 ) -> u32 {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return 0,
-    };
-
     let id = graphics_gif_create(env, data_ptr, data_len);
     if id == 0 {
         return 0;
@@ -923,12 +967,7 @@ pub fn graphics_gif_register(
 }
 
 /// Draw keyed GIF at natural size.
-pub fn graphics_gif_draw_key(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32, x: i32, y: i32) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_gif_draw_key(key: u64, x: i32, y: i32) {
     let id = {
         let res = RESOURCES.lock().unwrap();
         res.keyed_gifs.get(&key).copied()
@@ -940,20 +979,7 @@ pub fn graphics_gif_draw_key(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u3
 }
 
 /// Draw keyed GIF scaled.
-pub fn graphics_gif_draw_key_scaled(
-    env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_gif_draw_key_scaled(key: u64, x: i32, y: i32, w: u32, h: u32) {
     let id = {
         let res = RESOURCES.lock().unwrap();
         res.keyed_gifs.get(&key).copied()
@@ -965,12 +991,7 @@ pub fn graphics_gif_draw_key_scaled(
 }
 
 /// Unregister keyed GIF and destroy its underlying resource.
-pub fn graphics_gif_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_gif_unregister(key: u64) {
     let id = {
         let mut res = RESOURCES.lock().unwrap();
         res.keyed_gifs.remove(&key)
@@ -1003,16 +1024,10 @@ pub fn graphics_font_upload_ttf(env: &mut Caller<'_, ()>, ptr: u32, len: u32) ->
 /// Register TTF font under a string key.
 pub fn graphics_font_register_ttf(
     env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
+    key: u64,
     data_ptr: u32,
     data_len: u32,
 ) -> u32 {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return 0,
-    };
-
     let id = graphics_font_upload_ttf(env, data_ptr, data_len);
     if id == 0 {
         return 0;
@@ -1024,17 +1039,7 @@ pub fn graphics_font_register_ttf(
 }
 
 /// Register built-in Spleen font under a string key.
-pub fn graphics_font_register_spleen(
-    env: &mut Caller<'_, ()>,
-    key_ptr: u32,
-    key_len: u32,
-    size: u32,
-) -> u32 {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return 0,
-    };
-
+pub fn graphics_font_register_spleen(key: u64, size: u32) -> u32 {
     let id = graphics_font_use_spleen(size);
     if id == 0 {
         return 0;
@@ -1046,12 +1051,7 @@ pub fn graphics_font_register_spleen(
 }
 
 /// Unregister keyed font.
-pub fn graphics_font_unregister(env: &mut Caller<'_, ()>, key_ptr: u32, key_len: u32) {
-    let key = match read_guest_utf8(env, key_ptr, key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
+pub fn graphics_font_unregister(key: u64) {
     let id = {
         let mut res = RESOURCES.lock().unwrap();
         res.keyed_fonts.remove(&key)
@@ -1068,16 +1068,10 @@ pub fn graphics_text_key(
     x: i32,
     y: i32,
     env: &mut Caller<'_, ()>,
-    font_key_ptr: u32,
-    font_key_len: u32,
+    font_key: u64,
     text_ptr: u32,
     text_len: u32,
 ) {
-    let font_key = match read_guest_utf8(env, font_key_ptr, font_key_len) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-
     let font_id = {
         let res = RESOURCES.lock().unwrap();
         res.keyed_fonts.get(&font_key).copied()
@@ -1093,16 +1087,10 @@ pub fn graphics_text_key(
 /// Measure text using a keyed font.
 pub fn graphics_text_measure_key(
     env: &mut Caller<'_, ()>,
-    font_key_ptr: u32,
-    font_key_len: u32,
+    font_key: u64,
     text_ptr: u32,
     text_len: u32,
 ) -> u64 {
-    let font_key = match read_guest_utf8(env, font_key_ptr, font_key_len) {
-        Ok(k) => k,
-        Err(_) => return 0,
-    };
-
     let font_id = {
         let res = RESOURCES.lock().unwrap();
         res.keyed_fonts.get(&font_key).copied()
@@ -1200,6 +1188,15 @@ pub fn graphics_text(x: i32, y: i32, font_id: u32, env: &mut Caller<'_, ()>, ptr
     if let Some(font) = res.fonts.get(&font_id) {
         match font {
             FontResource::Ttf(f) => {
+                // Lock global state once for the whole string to enable blending
+                let mut s = global().lock().unwrap();
+                let width = s.video.width as i32;
+                let height = s.video.height as i32;
+                let draw_color = s.video.draw_color;
+                let r_fg = ((draw_color >> 16) & 0xFF) as u32;
+                let g_fg = ((draw_color >> 8) & 0xFF) as u32;
+                let b_fg = (draw_color & 0xFF) as u32;
+
                 let mut px = x as f32;
                 for ch in text.chars() {
                     let (metrics, bitmap) = f.rasterize(ch, 16.0); // fixed size
@@ -1207,7 +1204,25 @@ pub fn graphics_text(x: i32, y: i32, font_id: u32, env: &mut Caller<'_, ()>, ptr
                         if alpha > 0 {
                             let gx = px as i32 + (i % metrics.width) as i32;
                             let gy = y + (i / metrics.width) as i32;
-                            graphics_point(gx, gy);
+
+                            if gx >= 0 && gx < width && gy >= 0 && gy < height {
+                                let idx = (gy * width + gx) as usize;
+                                let bg = s.video.framebuffer[idx];
+
+                                // Alpha blend
+                                let a = alpha as u32;
+                                let inv_a = 255 - a;
+
+                                let r_bg = (bg >> 16) & 0xFF;
+                                let g_bg = (bg >> 8) & 0xFF;
+                                let b_bg = bg & 0xFF;
+
+                                let r = (r_fg * a + r_bg * inv_a) / 255;
+                                let g = (g_fg * a + g_bg * inv_a) / 255;
+                                let b = (b_fg * a + b_bg * inv_a) / 255;
+
+                                s.video.framebuffer[idx] = (r << 16) | (g << 8) | b;
+                            }
                         }
                     }
                     px += metrics.advance_width;

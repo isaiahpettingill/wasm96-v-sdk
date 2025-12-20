@@ -35,8 +35,10 @@ The core library will be at `target/release/libwasm96_core.so` (or equivalent fo
 ### Running
 Load the wasm96 core in your libretro frontend and select a `.wasm` file as the "game". The core will instantiate the WASM module and start calling the guest entrypoints according to the precedence rules above.
 
-## ABI notes: keyed resources (strings)
-The core uses **keyed resources** for images and fonts. Instead of receiving numeric handles from `*_create(...)`, guests register assets under a stable string key and later draw/use them by that key.
+## ABI notes: keyed resources (hashed strings)
+The core uses **keyed resources** for images and fonts. Instead of receiving numeric handles from `*_create(...)`, guests register assets under a stable key and later draw/use them by that key.
+
+At the ABI level, keys are `u64` values. The SDKs (Rust/Zig) automatically hash string keys (using a stable hash) to `u64` when calling the host, so you can use human-readable strings in your code.
 
 This avoids global mutable “resource id” state in guests and makes resource usage explicit.
 
@@ -161,10 +163,10 @@ The large `av/mod.rs` file has been split into multiple modules (`audio.rs`, `gr
 The large `runtime/mod.rs` file has been split into multiple modules (`runtime.rs`, `imports.rs`) for better organization and maintainability. All public functions are re-exported from `runtime` to maintain API compatibility.
 
 ### GIF decoding + scaling (host/core)
-The libretro core correctly decodes animated GIFs as indexed-color images and expands them to RGBA using the per-frame palette (or the global palette when the frame does not provide one). Scaled GIF rendering uses nearest-neighbor resampling so `gif_draw_key_scaled` produces correctly-sized output.
+The libretro core correctly decodes animated GIFs as indexed-color images and expands them to RGBA using the per-frame palette. Scaled GIF rendering uses nearest-neighbor resampling. Frame delays are now correctly respected (accumulated), and 0-delay frames default to 100ms, fixing playback speed issues. Frame composition (disposal methods) and interlacing are now fully supported, eliminating visual artifacts.
 
 ### PNG decoding + drawing (host/core)
-The core supports decoding **encoded PNG bytes** on the host. Guests can draw PNGs directly via `image_png` or register them as keyed resources for repeated use (see “ABI notes: keyed resources (strings)” above).
+The core supports decoding **encoded PNG bytes** on the host. Guests can draw PNGs directly via `image_png` or register them as keyed resources for repeated use (see “ABI notes: keyed resources (hashed strings)” above).
 
 ### SDK Parity
 Both Rust and Zig SDKs now implement the full set of core features, including all drawing primitives, audio playback, and input handling.
@@ -178,6 +180,18 @@ High-level audio playback (`play_wav`/`play_qoa`/`play_xm`) decodes assets and m
 - per-channel volume (Q8.8)
 - pan
 - looping
+
+### Resolution configuration (host/core)
+The core now correctly respects the resolution set by the guest via `graphics::set_size()` during `setup()`. Previously, the resolution was hardcoded to 320x240 in the libretro AV info, causing display issues if the guest requested a different size.
+
+### SVG scaling (host/core)
+SVG rendering now correctly respects the target width and height passed to `svg_draw_key`, scaling the vector graphic to fit the requested dimensions instead of cropping it.
+
+### Font blending (host/core)
+TTF font rendering now performs proper alpha blending with the background, eliminating artifacts where text would overwrite the background with black pixels in transparent regions of the glyph.
+
+### ABI Update: u64 keys (host/core/sdk)
+The resource ABI has been updated to use `u64` keys instead of string pointers. This improves portability and performance at the boundary. The Rust and Zig SDKs have been updated to automatically hash string keys to `u64` so application code remains unchanged.
 
 ## License
 

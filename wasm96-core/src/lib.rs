@@ -31,7 +31,6 @@ pub struct Wasm96Core {
     game_data: Option<libretro_backend::GameData>,
 }
 
-
 impl Wasm96Core {
     fn ensure_runtime(&mut self) -> Result<(), ()> {
         if self.rt.is_some() {
@@ -160,9 +159,15 @@ impl Core for Wasm96Core {
         // Call setup
         self.call_guest_setup();
 
+        // Get resolution from state (it might have been set by setup())
+        let (w, h) = {
+            let s = state::global().lock().unwrap();
+            (s.video.width, s.video.height)
+        };
+
         // Return default AV info.
         let av_info = libretro_backend::AudioVideoInfo::new()
-            .video(320, 240, 60.0, libretro_backend::PixelFormat::ARGB8888)
+            .video(w, h, 60.0, libretro_backend::PixelFormat::ARGB8888)
             .audio(44100.0)
             .region(libretro_backend::Region::NTSC);
 
