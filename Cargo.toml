@@ -12,7 +12,7 @@ members = [
 default-members = ["wasm96-core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 # Fill these in if you want (not required):
@@ -23,13 +23,12 @@ documentation = "https://github.com/isaiahpettingill/wasm96"
 
 [workspace.dependencies]
 # Core dependencies
-libretro-backend = "0.2.1"
+libretro-backend = { version = "0.2.1", default-features = false }
 
 # Runtime
 # Keep Wasmer temporarily for non-core crates until wasm96-core is fully migrated.
-wasmer = "6.1.0"
-wasmtime = "28.0.1"
-wasmtime-wasi = "28.0.1"
+wasmtime = "39.0.1"
+wasmtime-wasi = "39.0.1"
 wasi-common = "28.0.1"
 
 # SDK dependencies (safe defaults for wasm32 targets; keep minimal)

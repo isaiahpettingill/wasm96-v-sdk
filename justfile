@@ -28,3 +28,14 @@ run-rust-platformer:
 
 run-zig-guest:
     just run ./example/zig-guest/zig-out/bin/zig-guest.wasm
+
+install-cargo-deps:
+    cargo install cargo-zigbuild
+    rustup target add armv7-unknown-linux-gnueabihf
+    rustup target add aarch64-unknown-linux-gnu
+    rustup target add x86_64-apple-darwin
+    rustup target add aarch64-apple-darwin
+    rustup target add x86_64-pc-windows-gnu
+
+build-prod:
+    cargo zigbuild -p wasm96-core --target aarch64-unknown-linux-gnu --release

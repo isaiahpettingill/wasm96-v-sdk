@@ -204,7 +204,8 @@ MIT License - see `LICENSE` for details.
 
 ## Notes
 
-- The project is in active development; some WIT-defined features (e.g., storage) are not yet implemented in the SDK.
+- The project is in active development; Expect things to change
+- I am not planning on supporting this over time unless it takes off somehow. If you want it supported, either help the repo get a lot of stars or just fork it if you'd like to add features.
 - WAV playback is implemented using the hound library for decoding and mixing.
 - QOA playback is implemented using the qoaudio library for decoding and mixing.
 - XM playback is implemented using the xmrsplayer library for decoding and mixing.
