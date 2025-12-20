@@ -3,6 +3,11 @@ name = "wasm96-sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
 description = "SDK for building WASM apps that run under the wasm96 libretro core."
 
 [lib]
