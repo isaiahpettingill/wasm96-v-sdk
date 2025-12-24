@@ -1591,6 +1591,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_guest_osmosis"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "wasm96-sdk",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"

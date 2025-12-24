@@ -2,6 +2,7 @@ build-examples:
     cargo build -p rust_guest --release --target wasm32-unknown-unknown
     cargo build -p rust-guest-showcase --release --target wasm32-unknown-unknown
     cargo build -p rust_guest_mp_platformer --release --target wasm32-unknown-unknown
+    cargo build -p rust_guest_osmosis --release --target wasm32-unknown-unknown
     cd example/zig-guest && zig build
 
 build-sdks:
@@ -26,16 +27,8 @@ run-rust-showcase:
 run-rust-platformer:
     just run ./target/wasm32-unknown-unknown/release/rust_guest_mp_platformer.wasm
 
+run-rust-osmosis:
+    just run ./target/wasm32-unknown-unknown/release/rust_guest_osmosis.wasm
+
 run-zig-guest:
     just run ./example/zig-guest/zig-out/bin/zig-guest.wasm
-
-# TODO:  This doesn't work yet
-# install-cargo-deps:
-#     cargo install cargo-zigbuild
-#     rustup target add armv7-unknown-linux-gnueabihf
-#     rustup target add aarch64-unknown-linux-gnu
-#     rustup target add x86_64-apple-darwin
-#     rustup target add aarch64-apple-darwin
-#     rustup target add x86_64-pc-windows-gnu
-# build-prod:
-#     cargo zigbuild -p wasm96-core --target aarch64-unknown-linux-gnu --release
