@@ -65,6 +65,14 @@ fn C.wasm96_graphics_font_unregister(key u64)
 fn C.wasm96_graphics_text_key(x int, y int, font_key u64, text_ptr &u8, text_len usize)
 fn C.wasm96_graphics_text_measure_key(font_key u64, text_ptr &u8, text_len usize) u64
 
+fn C.wasm96_graphics_set_3d(enable u32)
+fn C.wasm96_graphics_camera_look_at(eye_x f32, eye_y f32, eye_z f32, target_x f32, target_y f32, target_z f32, up_x f32, up_y f32, up_z f32)
+fn C.wasm96_graphics_camera_perspective(fovy f32, aspect f32, near f32, far f32)
+fn C.wasm96_graphics_mesh_create(key u64, vertices_ptr &f32, vertices_len usize, indices_ptr &u32, indices_len usize)
+fn C.wasm96_graphics_mesh_create_obj(key u64, data_ptr &u8, data_len usize)
+fn C.wasm96_graphics_mesh_create_stl(key u64, data_ptr &u8, data_len usize)
+fn C.wasm96_graphics_mesh_draw(key u64, pos_x f32, pos_y f32, pos_z f32, rot_x f32, rot_y f32, rot_z f32, scale_x f32, scale_y f32, scale_z f32)
+
 // Input
 fn C.wasm96_input_is_button_down(port u32, btn u32) u32
 fn C.wasm96_input_is_key_down(key u32) u32
@@ -267,6 +275,44 @@ pub fn graphics_text_measure_key(font_key []u8, str []u8) TextSize {
 		width: u32(result >> 32)
 		height: u32(result & 0xFFFFFFFF)
 	}
+}
+
+// 3D Graphics API.
+
+// Enable or disable 3D rendering mode.
+pub fn graphics_set_3d(enable bool) {
+	C.wasm96_graphics_set_3d(if enable { 1 } else { 0 })
+}
+
+// Set the camera position and target.
+pub fn graphics_camera_look_at(eye_x f32, eye_y f32, eye_z f32, target_x f32, target_y f32, target_z f32, up_x f32, up_y f32, up_z f32) {
+	C.wasm96_graphics_camera_look_at(eye_x, eye_y, eye_z, target_x, target_y, target_z, up_x, up_y, up_z)
+}
+
+// Set the camera perspective projection.
+pub fn graphics_camera_perspective(fovy f32, aspect f32, near f32, far f32) {
+	C.wasm96_graphics_camera_perspective(fovy, aspect, near, far)
+}
+
+// Create a mesh from raw vertex and index data.
+// vertices: [x, y, z, u, v, nx, ny, nz, ...]
+pub fn graphics_mesh_create(key []u8, vertices []f32, indices []u32) {
+	C.wasm96_graphics_mesh_create(hash_key(key), &vertices[0], usize(vertices.len), &indices[0], usize(indices.len))
+}
+
+// Create a mesh from OBJ file data.
+pub fn graphics_mesh_create_obj(key []u8, data []u8) {
+	C.wasm96_graphics_mesh_create_obj(hash_key(key), &data[0], usize(data.len))
+}
+
+// Create a mesh from STL file data.
+pub fn graphics_mesh_create_stl(key []u8, data []u8) {
+	C.wasm96_graphics_mesh_create_stl(hash_key(key), &data[0], usize(data.len))
+}
+
+// Draw a mesh with transformation.
+pub fn graphics_mesh_draw(key []u8, pos_x f32, pos_y f32, pos_z f32, rot_x f32, rot_y f32, rot_z f32, scale_x f32, scale_y f32, scale_z f32) {
+	C.wasm96_graphics_mesh_draw(hash_key(key), pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, scale_x, scale_y, scale_z)
 }
 
 // Input API.
