@@ -1,5 +1,5 @@
 // Wasm96 V SDK
-module main
+module wasm96
 
 // Joypad button ids.
 pub enum Button as u32 {
